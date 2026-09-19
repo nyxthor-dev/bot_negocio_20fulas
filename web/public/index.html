@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0e1117" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>Publisher Manager — Panel</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="app">
+    <!-- Header móvil (sólo visible en pantallas chicas) -->
+    <header class="mobile-header">
+      <div class="mobile-header__brand">
+        <div class="mobile-header__logo">A</div>
+        <span>Publisher Manager</span>
+      </div>
+      <button class="mobile-header__sync" id="mobile-sync" title="Sincronizar todo">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+      </button>
+    </header>
+
+    <!-- Sidebar (desktop) -->
+    <aside class="sidebar">
+      <div class="sidebar__brand">
+        <div class="sidebar__logo">A</div>
+        <div>
+          <div class="sidebar__title">Publisher Manager</div>
+          <div class="sidebar__subtitle">Bot de reenvío</div>
+        </div>
+      </div>
+      <nav class="sidebar__nav">
+        <a href="#" class="nav-item active" data-view="publish">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          <span>Publicar</span>
+        </a>
+        <a href="#" class="nav-item" data-view="history">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          <span>Historial</span>
+        </a>
+      </nav>
+      <div class="sidebar__footer">
+        <div class="status" id="bot-status-desktop">
+          <span class="status__dot status__dot--pending"></span>
+          <span class="status__text">Conectando…</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Contenido principal -->
+    <main class="main">
+      <!-- Vista: Publicar -->
+      <section class="view view--active" id="view-publish">
+        <header class="view__header">
+          <h1 class="view__title">Publicar</h1>
+          <p class="view__desc">Panel Web de Publisher Manager. Permite subir publicaciones con multimedia a muchos grupos de WhatsApp y canales.</p>
+        </header>
+
+        <!-- Multimedia -->
+        <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="Subir multimedia">
+          <input type="file" id="media-input" accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.txt,.zip,application/pdf" hidden />
+          <div class="dropzone__placeholder" id="dropzone-placeholder">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            <span class="dropzone__text">Tocá para adjuntar multimedia</span>
+            <span class="dropzone__hint">Imagen, video, audio o documento (máx 50MB)</span>
+          </div>
+          <div class="dropzone__preview" id="media-preview" hidden>
+            <button class="dropzone__remove" id="media-remove" type="button" aria-label="Quitar archivo">×</button>
+            <img id="preview-img" hidden alt="preview" />
+            <video id="preview-video" hidden controls playsinline></video>
+            <div id="preview-file" class="preview-file" hidden>
+              <span class="preview-file__icon">📄</span>
+              <span id="preview-filename" class="preview-file__name"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Texto -->
+        <div class="field">
+          <textarea
+            id="publish-text"
+            class="field__input field__input--textarea"
+            placeholder="Escribe el mensaje...
+
+Formatos de WhatsApp:
+&#x60;&#x60;&#x60;hola&#x60;&#x60;&#x60;  →  código en bloque
+&#x60;hola&#x60;  →  código inline
+*Hola*  →  negrita
+_hola_  →  cursiva
+~hola~  →  tachado
+> Hola  →  cita
+*~hola~*  →  negrita + tachado
+1. Hola  →  lista numerada
+- hola  →  lista con viñetas"
+            rows="10"
+          ></textarea>
+          <div class="field__hint-row">
+            <span class="field__hint" id="char-count">0 caracteres</span>
+          </div>
+        </div>
+
+        <!-- Decoraciones -->
+        <div class="field">
+          <label class="checkbox">
+            <input type="checkbox" id="dec-forwarded" />
+            <span>Tag "Reenviado"</span>
+          </label>
+        </div>
+
+        <!-- Destinos -->
+        <div class="card targets-card">
+          <div class="card__header">
+            <span class="card__title">Destinos</span>
+            <div class="refresh-buttons">
+              <button class="btn btn--ghost btn--sm" id="btn-refresh-groups" type="button">👥 Grupos</button>
+              <button class="btn btn--ghost btn--sm" id="btn-refresh-newsletters" type="button">📢 Canales</button>
+            </div>
+          </div>
+
+          <div class="tabs">
+            <button class="tab active" data-tab="groups" type="button">
+              <span>👥 Grupos</span>
+              <span class="tab__count" id="tab-groups-count">0</span>
+            </button>
+            <button class="tab" data-tab="newsletters" type="button">
+              <span>📢 Canales</span>
+              <span class="tab__count" id="tab-newsletters-count">0</span>
+            </button>
+          </div>
+
+          <div class="targets-toolbar">
+            <label class="checkbox">
+              <input type="checkbox" id="select-all" />
+              <span>Seleccionar todos</span>
+            </label>
+            <span class="targets-count" id="targets-count">0</span>
+          </div>
+          <div class="targets-list" id="targets-list">
+            <div class="empty">Cargando grupos…</div>
+          </div>
+        </div>
+
+        <!-- Resultados -->
+        <div class="results" id="publish-results" hidden></div>
+      </section>
+
+      <!-- Vista: Historial -->
+      <section class="view" id="view-history">
+        <header class="view__header">
+          <h1 class="view__title">Historial</h1>
+          <p class="view__desc">Últimas publicaciones enviadas.</p>
+        </header>
+        <div class="history-list" id="history-list">
+          <div class="empty">Cargando historial…</div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Botón flotante de Publicar (móvil) -->
+    <button class="fab" id="fab-publish" disabled>
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+      <span class="fab__text">Publicar</span>
+      <span class="fab__spinner" hidden></span>
+    </button>
+
+    <!-- Bottom nav (móvil) -->
+    <nav class="bottom-nav">
+      <a href="#" class="bottom-nav__item active" data-view="publish">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+        <span>Publicar</span>
+      </a>
+      <a href="#" class="bottom-nav__item" data-view="history">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        <span>Historial</span>
+      </a>
+    </nav>
+
+    <!-- Toast -->
+    <div class="toast" id="toast" hidden></div>
+
+    <script src="/app.js"></script>
+  </div>
+</body>
+</html>

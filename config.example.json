@@ -1,0 +1,19 @@
+{
+  "bot": {
+    "phone": "5491112345678",
+    "name": "Publisher Manager",
+    "pairingMethod": "qr"
+  },
+  "storage": {
+    "authFolder": "./data/auth",
+    "dbPath": "./data/bot.db"
+  },
+  "logging": {
+    "level": "info"
+  },
+  "web": {
+    "enabled": true,
+    "port": 3000,
+    "host": "0.0.0.0"
+  }
+}
