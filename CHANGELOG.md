@@ -17,6 +17,7 @@ Versión de consolidación: **se unió la versión base (`bot_negocio_20fulas`) 
 - Fallback determinista: si la elección ya no aplica (cuenta quitada, destino deseleccionado), el envío cae al orden determinista sin errores.
 
 ### Corregido
+- Logotipo completo: los huecos internos de las letras P, B, R y A tenían fondo blanco — ahora son transparentes y el logo se ve correcto sobre cualquier fondo (login).
 - Editar una programación mientras se está enviando ya se protege con guard de concurrencia: una "una vez" editada a diaria ya no termina marcada como terminada.
 - Destinos repetidos entre dos mensajes de la MISMA cuenta ahora se rechazan con error claro (antes se perdían en silencio).
 - La multimedia inline de "publicar" se guarda recién después de validar todo el envío (sin archivos huérfanos ante un error).
