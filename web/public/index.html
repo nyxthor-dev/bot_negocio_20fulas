@@ -2,33 +2,62 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#0e1117" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <title>Publisher Manager — Panel</title>
+  <title>Publisher Manager</title>
+  <link rel="icon" type="image/png" href="/img/favicon.png" />
+  <link rel="apple-touch-icon" href="/img/apple-touch-icon.png" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <div class="app">
+  <!-- Login -->
+  <div class="login-screen" id="login-screen" hidden>
+    <div class="login-wrap">
+      <img class="login-logo" src="/img/logo-full.png" alt="Publisher Manager" width="640" height="606" />
+      <form class="login-card" id="login-form">
+        <label class="field">
+          <span class="field__label">Usuario</span>
+          <input type="text" id="login-username" class="field__input" autocomplete="username" autofocus />
+        </label>
+        <label class="field">
+          <span class="field__label">Contraseña</span>
+          <input type="password" id="login-password" class="field__input" autocomplete="current-password" />
+        </label>
+        <div class="login-card__error" id="login-error" hidden></div>
+        <button class="btn btn--primary btn--block" id="login-submit" type="submit">
+          <span class="btn__text">Entrar</span>
+          <span class="btn__spinner" hidden></span>
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <div class="app" id="app" hidden>
     <!-- Header móvil (sólo visible en pantallas chicas) -->
     <header class="mobile-header">
       <div class="mobile-header__brand">
-        <div class="mobile-header__logo">A</div>
+        <img class="mobile-header__logo" src="/img/logo-icon.png" alt="Publisher Manager" width="128" height="128" />
         <span>Publisher Manager</span>
       </div>
-      <button class="mobile-header__sync" id="mobile-sync" title="Sincronizar todo">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-      </button>
+      <div class="mobile-header__actions">
+        <button class="mobile-header__btn" id="mobile-sync" title="Sincronizar todo">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        </button>
+        <button class="mobile-header__btn" id="mobile-logout" title="Cerrar sesión">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        </button>
+      </div>
     </header>
 
-    <!-- Sidebar (desktop) -->
+    <!-- Sidebar (desktop) — sólo 2 elementos -->
     <aside class="sidebar">
       <div class="sidebar__brand">
-        <div class="sidebar__logo">A</div>
+        <img class="sidebar__logo" src="/img/logo-icon.png" alt="Publisher Manager" width="128" height="128" />
         <div>
           <div class="sidebar__title">Publisher Manager</div>
-          <div class="sidebar__subtitle">Bot de reenvío</div>
+          <div class="sidebar__subtitle">Panel de publicaciones</div>
         </div>
       </div>
       <nav class="sidebar__nav">
@@ -46,43 +75,70 @@
           <span class="status__dot status__dot--pending"></span>
           <span class="status__text">Conectando…</span>
         </div>
+        <div class="sidebar__user">
+          <span id="sidebar-username"></span>
+          <button class="btn btn--ghost btn--sm" id="btn-logout">Salir</button>
+        </div>
       </div>
     </aside>
 
     <!-- Contenido principal -->
     <main class="main">
-      <!-- Vista: Publicar -->
+      <!-- ==================== VISTA: PUBLICAR ==================== -->
       <section class="view view--active" id="view-publish">
         <header class="view__header">
           <h1 class="view__title">Publicar</h1>
-          <p class="view__desc">Panel Web de Publisher Manager. Permite subir publicaciones con multimedia a muchos grupos de WhatsApp y canales.</p>
+          <p class="view__desc">Creá y enviá publicaciones con multimedia a tus grupos y canales. Guardá plantillas reutilizables y programá envíos automáticos.</p>
         </header>
 
-        <!-- Multimedia -->
-        <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="Subir multimedia">
-          <input type="file" id="media-input" accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.txt,.zip,application/pdf" hidden />
-          <div class="dropzone__placeholder" id="dropzone-placeholder">
-            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-            <span class="dropzone__text">Tocá para adjuntar multimedia</span>
-            <span class="dropzone__hint">Imagen, video, audio o documento (máx 50MB)</span>
+        <!-- Sub-tabs de la vista Publicar -->
+        <div class="tabs subtabs" id="publish-subtabs">
+          <button class="tab active" data-subtab="publish" type="button">
+            <span>📤 Publicar</span>
+          </button>
+          <button class="tab" data-subtab="templates" type="button">
+            <span>📄 Plantillas</span>
+            <span class="tab__count" id="tab-templates-count">0</span>
+          </button>
+          <button class="tab" data-subtab="schedules" type="button">
+            <span>⏰ Programadas</span>
+            <span class="tab__count" id="tab-schedules-count">0</span>
+          </button>
+        </div>
+
+        <!-- ===== Sub-tab: Publicar ===== -->
+        <div class="subtab-panel" id="subtab-publish">
+          <!-- Multimedia (misma interfaz que los mensajes programados) -->
+          <div class="attach-row" id="attach-row">
+            <input type="file" id="media-input" accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.txt,.zip,application/pdf" hidden />
+            <button class="btn btn--ghost" id="btn-attach" type="button">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+              <span>Adjuntar multimedia</span>
+            </button>
+            <span class="attach-row__name" id="attach-name" hidden></span>
+            <button class="btn btn--ghost btn--sm btn--danger" id="media-remove" type="button" hidden>✕ Quitar</button>
           </div>
-          <div class="dropzone__preview" id="media-preview" hidden>
-            <button class="dropzone__remove" id="media-remove" type="button" aria-label="Quitar archivo">×</button>
+          <span class="attach-row__hint">Imagen, video, audio o documento (máx 50MB)</span>
+          <div class="attach-preview" id="media-preview" hidden>
             <img id="preview-img" hidden alt="preview" />
             <video id="preview-video" hidden controls playsinline></video>
             <div id="preview-file" class="preview-file" hidden>
               <span class="preview-file__icon">📄</span>
               <span id="preview-filename" class="preview-file__name"></span>
             </div>
+            <div id="preview-server" hidden></div>
           </div>
-        </div>
+          <div class="upload-state" id="upload-state" hidden>
+            <span class="upload-state__spinner"></span>
+            <span id="upload-state-text">Subiendo multimedia…</span>
+          </div>
 
-        <!-- Texto -->
-        <div class="field">
-          <textarea
-            id="publish-text"
-            class="field__input field__input--textarea"
-            placeholder="Escribe el mensaje...
+          <!-- Texto -->
+          <div class="field">
+            <textarea
+              id="publish-text"
+              class="field__input field__input--textarea"
+              placeholder="Escribe el mensaje...
 
 Formatos de WhatsApp:
 &#x60;&#x60;&#x60;hola&#x60;&#x60;&#x60;  →  código en bloque
@@ -94,66 +150,326 @@ _hola_  →  cursiva
 *~hola~*  →  negrita + tachado
 1. Hola  →  lista numerada
 - hola  →  lista con viñetas"
-            rows="10"
-          ></textarea>
-          <div class="field__hint-row">
-            <span class="field__hint" id="char-count">0 caracteres</span>
-          </div>
-        </div>
-
-        <!-- Decoraciones -->
-        <div class="field">
-          <label class="checkbox">
-            <input type="checkbox" id="dec-forwarded" />
-            <span>Tag "Reenviado"</span>
-          </label>
-        </div>
-
-        <!-- Destinos -->
-        <div class="card targets-card">
-          <div class="card__header">
-            <span class="card__title">Destinos</span>
-            <div class="refresh-buttons">
-              <button class="btn btn--ghost btn--sm" id="btn-refresh-groups" type="button">👥 Grupos</button>
-              <button class="btn btn--ghost btn--sm" id="btn-refresh-newsletters" type="button">📢 Canales</button>
+              rows="10"
+            ></textarea>
+            <div class="field__hint-row">
+              <span class="field__hint" id="char-count">0 caracteres</span>
             </div>
           </div>
 
-          <div class="tabs">
-            <button class="tab active" data-tab="groups" type="button">
-              <span>👥 Grupos</span>
-              <span class="tab__count" id="tab-groups-count">0</span>
-            </button>
-            <button class="tab" data-tab="newsletters" type="button">
-              <span>📢 Canales</span>
-              <span class="tab__count" id="tab-newsletters-count">0</span>
-            </button>
+          <!-- Decoraciones -->
+          <div class="field decorations-row">
+            <label class="checkbox">
+              <input type="checkbox" id="dec-forwarded" />
+              <span>Tag "Reenviado"</span>
+            </label>
           </div>
 
-          <div class="targets-toolbar">
-            <label class="checkbox">
-              <input type="checkbox" id="select-all" />
-              <span>Seleccionar todos</span>
-            </label>
-            <span class="targets-count" id="targets-count">0</span>
+          <!-- Plantilla: cargar / guardar -->
+          <div class="card template-tools">
+            <div class="template-tools__row">
+              <select id="publish-template-select" class="field__input">
+                <option value="">Cargar plantilla…</option>
+              </select>
+            </div>
+            <div class="template-tools__row template-save-row">
+              <input type="text" id="template-name" class="field__input" placeholder="Nombre para guardar como plantilla" />
+              <button class="btn btn--ghost" id="btn-save-template">💾 Guardar</button>
+            </div>
           </div>
-          <div class="targets-list" id="targets-list">
-            <div class="empty">Cargando grupos…</div>
+
+          <!-- Destinos -->
+          <div class="card targets-card">
+            <div class="card__header">
+              <span class="card__title">Destinos</span>
+              <div class="refresh-buttons">
+                <button class="btn btn--ghost btn--sm" id="btn-refresh-groups" type="button">👥 Grupos</button>
+                <button class="btn btn--ghost btn--sm" id="btn-refresh-newsletters" type="button">📢 Canales</button>
+              </div>
+            </div>
+
+            <!-- Selector de cuenta (sólo si hay más de una) -->
+            <div class="account-chips" id="account-chips" hidden></div>
+
+            <div class="tabs">
+              <button class="tab active" data-tab="groups" type="button">
+                <span>👥 Grupos</span>
+                <span class="tab__count" id="tab-groups-count">0</span>
+              </button>
+              <button class="tab" data-tab="newsletters" type="button">
+                <span>📢 Canales</span>
+                <span class="tab__count" id="tab-newsletters-count">0</span>
+              </button>
+            </div>
+
+            <div class="targets-toolbar">
+              <label class="checkbox">
+                <input type="checkbox" id="select-all" />
+                <span>Seleccionar todos</span>
+              </label>
+              <span class="targets-count" id="targets-count">0</span>
+            </div>
+            <div class="targets-list" id="targets-list">
+              <div class="empty">Cargando grupos…</div>
+            </div>
+          </div>
+
+          <!-- Resultados -->
+          <div class="results" id="publish-results" hidden></div>
+
+          <!-- Acción de publicar (pantallas grandes; en móvil está el FAB) -->
+          <div class="actions actions--publish">
+            <button class="btn btn--primary btn--block" id="btn-publish" disabled>
+              <span class="btn__text">Publicar</span>
+              <span class="btn__spinner" hidden></span>
+            </button>
           </div>
         </div>
 
-        <!-- Resultados -->
-        <div class="results" id="publish-results" hidden></div>
+        <!-- ===== Sub-tab: Plantillas ===== -->
+        <div class="subtab-panel" id="subtab-templates" hidden>
+          <div class="card">
+            <div class="history-list" id="templates-list">
+              <div class="empty">Cargando plantillas…</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== Sub-tab: Programadas ===== -->
+        <div class="subtab-panel" id="subtab-schedules" hidden>
+          <!-- Editor de programación -->
+          <div class="card" id="schedule-editor" hidden>
+            <div class="card__header">
+              <span class="card__title" id="schedule-editor-title">Nueva programación</span>
+              <button class="btn btn--ghost btn--sm" id="btn-cancel-sched" type="button">Cancelar</button>
+            </div>
+            <div class="form-grid">
+              <label class="field">
+                <span class="field__label">Nombre</span>
+                <input type="text" id="sched-name" class="field__input" placeholder="Ej: Promo de la mañana" />
+              </label>
+              <label class="field">
+                <span class="field__label">Repetición</span>
+                <select id="sched-type" class="field__input">
+                  <option value="once">Una sola vez</option>
+                  <option value="daily">Todos los días</option>
+                  <option value="weekly">Semanal</option>
+                  <option value="monthly">Mensual</option>
+                  <option value="interval">Cada N minutos</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="form-grid" id="sched-once-fields">
+              <label class="field">
+                <span class="field__label">Fecha y hora</span>
+                <input type="datetime-local" id="sched-datetime" class="field__input" />
+              </label>
+            </div>
+
+            <div id="sched-recur-fields" hidden>
+              <div class="field">
+                <span class="field__label">Horarios del día</span>
+                <div class="time-chips" id="sched-times-chips"></div>
+                <div class="time-add-row">
+                  <input type="time" id="sched-new-time" class="field__input" value="09:00" />
+                  <button class="btn btn--ghost btn--sm" id="btn-add-time" type="button">+ Agregar hora</button>
+                </div>
+                <span class="field__hint">Agregá varios horarios para repetir la publicación varias veces al día.</span>
+              </div>
+              <div class="form-grid">
+                <label class="field" id="sched-dow-field" hidden>
+                  <span class="field__label">Día de la semana</span>
+                  <select id="sched-dow" class="field__input">
+                    <option value="0">Domingo</option>
+                    <option value="1">Lunes</option>
+                    <option value="2">Martes</option>
+                    <option value="3">Miércoles</option>
+                    <option value="4">Jueves</option>
+                    <option value="5">Viernes</option>
+                    <option value="6">Sábado</option>
+                  </select>
+                </label>
+                <label class="field" id="sched-dom-field" hidden>
+                  <span class="field__label">Día del mes (1-28)</span>
+                  <input type="number" id="sched-dom" class="field__input" min="1" max="28" value="1" />
+                </label>
+              </div>
+            </div>
+
+            <div id="sched-interval-fields" hidden>
+              <div class="form-grid">
+                <label class="field">
+                  <span class="field__label">Repetir cada (minutos)</span>
+                  <input type="number" id="sched-interval" class="field__input" min="1" max="1440" value="90" />
+                </label>
+                <div class="field">
+                  <span class="field__label">Limitar horario (opcional)</span>
+                  <label class="checkbox">
+                    <input type="checkbox" id="sched-window-on" />
+                    <span>Sólo enviar entre horas</span>
+                  </label>
+                </div>
+              </div>
+              <div class="form-grid" id="sched-window-fields" hidden>
+                <label class="field">
+                  <span class="field__label">Desde</span>
+                  <input type="time" id="sched-window-start" class="field__input" value="09:00" />
+                </label>
+                <label class="field">
+                  <span class="field__label">Hasta</span>
+                  <input type="time" id="sched-window-end" class="field__input" value="18:00" />
+                </label>
+              </div>
+            </div>
+
+            <div class="field">
+              <span class="field__label">Mensajes (uno por cuenta)</span>
+              <div id="sched-messages"></div>
+              <button class="btn btn--ghost btn--sm" id="btn-add-sched-msg">+ Agregar mensaje</button>
+            </div>
+
+            <div class="actions actions--editor">
+              <button class="btn btn--primary" id="btn-save-sched">
+                <span class="btn__text">Guardar programación</span>
+                <span class="btn__spinner" hidden></span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Lista de programaciones -->
+          <div class="card">
+            <div class="card__header">
+              <span class="card__title">Programaciones</span>
+              <button class="btn btn--ghost btn--sm" id="btn-new-sched">+ Nueva</button>
+            </div>
+            <div class="history-list" id="schedules-list">
+              <div class="empty">Cargando programaciones…</div>
+            </div>
+          </div>
+        </div>
       </section>
 
-      <!-- Vista: Historial -->
+      <!-- ==================== VISTA: HISTORIAL ==================== -->
       <section class="view" id="view-history">
         <header class="view__header">
           <h1 class="view__title">Historial</h1>
-          <p class="view__desc">Últimas publicaciones enviadas.</p>
+          <p class="view__desc">Revisá las publicaciones enviadas y administrá tus cuentas y usuarios del panel.</p>
         </header>
-        <div class="history-list" id="history-list">
-          <div class="empty">Cargando historial…</div>
+
+        <!-- Sub-tabs de la vista Historial -->
+        <div class="tabs subtabs" id="history-subtabs">
+          <button class="tab active" data-subtab="history" type="button">
+            <span>🕐 Historial</span>
+          </button>
+          <button class="tab" data-subtab="accounts" type="button">
+            <span>📱 Cuentas</span>
+            <span class="tab__count" id="tab-accounts-count">0</span>
+          </button>
+          <button class="tab" data-subtab="admins" type="button" id="tab-admins" style="display:none">
+            <span>👤 Usuarios</span>
+          </button>
+        </div>
+
+        <!-- ===== Sub-tab: Historial ===== -->
+        <div class="subtab-panel" id="subtab-history">
+          <div class="history-list" id="history-list">
+            <div class="empty">Cargando historial…</div>
+          </div>
+        </div>
+
+        <!-- ===== Sub-tab: Cuentas ===== -->
+        <div class="subtab-panel" id="subtab-accounts" hidden>
+          <!-- Agregar cuenta -->
+          <div class="card">
+            <div class="card__header">
+              <span class="card__title">Agregar cuenta</span>
+            </div>
+            <div class="form-grid">
+              <label class="field">
+                <span class="field__label">Nombre para identificarla</span>
+                <input type="text" id="new-account-label" class="field__input" placeholder="Ej: Número principal" />
+              </label>
+              <label class="field">
+                <span class="field__label">Teléfono (internacional, sin +)</span>
+                <input type="text" id="new-account-phone" class="field__input" placeholder="5491112345678" inputmode="numeric" />
+              </label>
+              <div class="field">
+                <span class="field__label">&nbsp;</span>
+                <button class="btn btn--primary" id="btn-add-account">Agregar</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Vinculación QR / código -->
+          <div class="card" id="linking-card" hidden>
+            <div class="card__header">
+              <span class="card__title" id="linking-title">Vinculando cuenta…</span>
+              <button class="btn btn--ghost btn--sm" id="btn-cancel-link">Cancelar</button>
+            </div>
+            <div class="linking-body">
+              <div class="qr-box" id="qr-box">
+                <img id="qr-img" alt="QR de vinculación" hidden />
+                <div class="empty" id="qr-status">Esperando QR…</div>
+              </div>
+              <div class="linking-info">
+                <p>Escaneá el QR desde <strong>WhatsApp &gt; Dispositivos vinculados &gt; Vincular dispositivo</strong>.</p>
+                <p>Si preferís código: <strong>WhatsApp &gt; Dispositivos vinculados &gt; Vincular con número</strong>.</p>
+                <div class="pairing-code" id="pairing-code" hidden></div>
+                <button class="btn btn--ghost btn--sm" id="btn-request-code" type="button">Usar código de vinculación</button>
+                <p class="field__hint">El QR se renueva solo cada ~20 segundos. Esta pantalla se cierra sola cuando la cuenta conecte.</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Lista de cuentas -->
+          <div class="card">
+            <div class="card__header">
+              <span class="card__title">Tus cuentas</span>
+            </div>
+            <div id="accounts-list">
+              <div class="empty">Cargando cuentas…</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== Sub-tab: Usuarios (superadmin) ===== -->
+        <div class="subtab-panel" id="subtab-admins" hidden>
+          <div class="card">
+            <div class="card__header">
+              <span class="card__title">Crear administrador</span>
+            </div>
+            <div class="form-grid">
+              <label class="field">
+                <span class="field__label">Usuario</span>
+                <input type="text" id="new-admin-username" class="field__input" placeholder="ej: juan" />
+              </label>
+              <label class="field">
+                <span class="field__label">Contraseña (mín 8)</span>
+                <input type="text" id="new-admin-password" class="field__input" placeholder="mínimo 8 caracteres" />
+              </label>
+              <label class="field">
+                <span class="field__label">Rol</span>
+                <select id="new-admin-role" class="field__input">
+                  <option value="admin">Admin</option>
+                  <option value="superadmin">Superadmin</option>
+                </select>
+              </label>
+              <div class="field">
+                <span class="field__label">&nbsp;</span>
+                <button class="btn btn--primary" id="btn-add-admin">Crear</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card__header">
+              <span class="card__title">Administradores</span>
+            </div>
+            <div id="admins-list">
+              <div class="empty">Cargando…</div>
+            </div>
+          </div>
         </div>
       </section>
     </main>
@@ -165,7 +481,7 @@ _hola_  →  cursiva
       <span class="fab__spinner" hidden></span>
     </button>
 
-    <!-- Bottom nav (móvil) -->
+    <!-- Bottom nav (móvil) — sólo 2 elementos -->
     <nav class="bottom-nav">
       <a href="#" class="bottom-nav__item active" data-view="publish">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>

@@ -9,9 +9,10 @@ export type PairingMethod = 'qr' | 'code'
 
 export interface BotConfig {
   bot: {
-    phone: string
-    name: string
-    pairingMethod: PairingMethod | null  // null = preguntar por consola
+    /** Ya no hace falta: cada cuenta se vincula desde el panel con su propio número. */
+    phone?: string
+    name?: string
+    pairingMethod?: PairingMethod | null
   }
   storage: {
     authFolder: string
@@ -29,7 +30,8 @@ export interface BotConfig {
 
 const DEFAULTS = {
   bot: {
-    name: 'publisher-manager-bot',
+    name: 'publisher-manager',
+    phone: '',
     pairingMethod: null as PairingMethod | null
   },
   storage: {
@@ -65,10 +67,11 @@ function deepMerge<T>(base: T, override: unknown): T {
 
 function validate(cfg: BotConfig): void {
   const errs: string[] = []
-  if (!cfg.bot?.phone || !/^\d{7,15}$/.test(cfg.bot.phone.replace(/[^\d]/g, ''))) {
+  // bot.phone es opcional desde la v3 (multi-cuenta): si está, debe ser válido
+  if (cfg.bot?.phone && !/^\d{7,15}$/.test(cfg.bot.phone.replace(/[^\d]/g, ''))) {
     errs.push('bot.phone debe ser un número de teléfono válido (7-15 dígitos, sólo números)')
   }
-  if (cfg.bot.pairingMethod !== null && !['qr', 'code'].includes(cfg.bot.pairingMethod)) {
+  if (cfg.bot?.pairingMethod != null && !['qr', 'code'].includes(cfg.bot.pairingMethod)) {
     errs.push('bot.pairingMethod debe ser "qr", "code" o null')
   }
   if (!cfg.storage?.authFolder || typeof cfg.storage.authFolder !== 'string') {
@@ -97,22 +100,56 @@ function validate(cfg: BotConfig): void {
 
 let cached: BotConfig | null = null
 
+/**
+ * Variables de entorno que pisan config.json — pensadas para Docker/Render,
+ * donde no hay archivo de configuración y todo se controla desde la
+ * plataforma. Prioridad: entorno > config.json > valores por defecto.
+ */
+function applyEnvOverrides(cfg: BotConfig): void {
+  if (process.env.PORT) {
+    const port = Number(process.env.PORT)
+    if (Number.isInteger(port) && port >= 1 && port <= 65535) {
+      cfg.web.port = port
+    }
+  }
+  if (process.env.HOST && process.env.HOST.length > 0) {
+    cfg.web.host = process.env.HOST
+  }
+  if (process.env.WEB_ENABLED !== undefined) {
+    cfg.web.enabled = ['1', 'true', 'yes', 'on'].includes(process.env.WEB_ENABLED.toLowerCase())
+  }
+  if (
+    process.env.LOG_LEVEL &&
+    ['trace', 'debug', 'info', 'warn', 'error', 'fatal'].includes(process.env.LOG_LEVEL)
+  ) {
+    cfg.logging.level = process.env.LOG_LEVEL as BotConfig['logging']['level']
+  }
+  if (process.env.DATA_DIR && process.env.DATA_DIR.length > 0) {
+    const root = process.env.DATA_DIR.replace(/[\\/]+$/, '')
+    cfg.storage.authFolder = `${root}/auth`
+    cfg.storage.dbPath = `${root}/bot.db`
+  }
+}
+
 /** Lee y valida config.json. Lanza error si falta o es inválido. */
 export function loadConfig(): BotConfig {
   if (cached) return cached
-  if (!existsSync(CONFIG_PATH)) {
+  let parsed: unknown = {}
+  if (existsSync(CONFIG_PATH)) {
+    try {
+      parsed = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'))
+    } catch (e) {
+      throw new Error(`config.json tiene JSON inválido: ${(e as Error).message}`)
+    }
+  } else if (process.env.WEB_ENABLED === undefined) {
     throw new Error(
       `No se encontró config.json en ${CONFIG_PATH}.\n` +
-      `Copiá config.example.json a config.json y editá los valores.`
+      `Copiá config.example.json a config.json y editá los valores.\n` +
+      `O usá variables de entorno (WEB_ENABLED, PORT, HOST, LOG_LEVEL, DATA_DIR) — típico en Docker.`
     )
   }
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'))
-  } catch (e) {
-    throw new Error(`config.json tiene JSON inválido: ${(e as Error).message}`)
-  }
   const merged = deepMerge(DEFAULTS, parsed) as BotConfig
+  applyEnvOverrides(merged)
   validate(merged)
   cached = merged
   return merged

@@ -46,11 +46,11 @@ export function readPackageInfo(): { name: string; version: string } {
     const raw = readFileSync(new URL('../package.json', import.meta.url), 'utf-8')
     const pkg = JSON.parse(raw)
     return {
-      name: pkg.name || 'publisher-manager-bot',
+      name: pkg.name || 'publisher-manager',
       version: pkg.version || '0.0.0'
     }
   } catch {
-    return { name: 'publisher-manager-bot', version: '0.0.0' }
+    return { name: 'publisher-manager', version: '0.0.0' }
   }
 }
 

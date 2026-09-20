@@ -120,14 +120,16 @@ export interface SyncNewslettersResult {
 }
 
 /**
- * Sincroniza todos los canales suscritos con la cache SQL.
+ * Sincroniza todos los canales suscritos de la cuenta con la cache SQL.
  *
  * @param sock              Socket activo
  * @param cacheToDb         Si true, persiste en SQLite
+ * @param accountId         Cuenta dueña de esta cache (los canales son por cuenta)
  */
 export async function syncNewsletters(
   sock: WASocket,
-  cacheToDb: boolean = true
+  cacheToDb: boolean = true,
+  accountId: number = 0
 ): Promise<SyncNewslettersResult> {
   const rawList = await fetchSubscribedNewsletters(sock)
   const channels: ChannelInfo[] = []
@@ -146,10 +148,12 @@ export async function syncNewsletters(
 
       if (cacheToDb) {
         upsertGroup({
+          account_id: accountId,
           jid: info.jid,
           name: info.name,
           is_admin: info.isAdmin ? 1 : 0,
           is_owner: info.isOwner ? 1 : 0,
+          can_send: info.isAdmin ? 1 : 0,
           last_seen: now
         })
       }

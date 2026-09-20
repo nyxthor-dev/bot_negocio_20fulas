@@ -1,34 +1,35 @@
 {
-  "name": "publisher-manager-bot",
-  "version": "2.0.0",
-  "description": "Bot de reenvio a grupos y canales con panel web admin (SQLite + botones nativos)",
+  "name": "publisher-manager",
+  "version": "3.5.0",
+  "description": "Bot de reenvio multi-cuenta a grupos y canales con panel web mobile-first (login, plantillas, multimedia 50MB, programacion y SQLite)",
   "type": "module",
   "main": "index.ts",
   "scripts": {
     "start": "tsx index.ts",
     "dev": "tsx watch index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "create-admin": "tsx scripts/create-admin.ts",
+    "test": "tsx scripts/full-test.ts"
   },
   "dependencies": {
-    "@fastify/multipart": "^10.1.1",
     "@fastify/static": "^10.1.4",
     "@fer2809fl/baileys": "^7.0.5",
     "@hapi/boom": "^10.0.1",
-    "axios": "^1.7.0",
+    "axios": "^1.20.0",
     "better-sqlite3": "^13.0.3",
     "fastify": "^5.12.5",
-    "fluent-ffmpeg": "^2.1.3",
     "node-cache": "^5.1.2",
     "pino": "^9.4.0",
     "pino-pretty": "^11.2.2",
+    "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",
-    "sharp": "^0.35.4"
+    "tsx": "^4.19.1"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^22.7.4",
+    "@types/qrcode": "^1.5.5",
     "@types/qrcode-terminal": "^0.12.2",
-    "tsx": "^4.19.1",
     "typescript": "^5.6.2"
   },
   "engines": {

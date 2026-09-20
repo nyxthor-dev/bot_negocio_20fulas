@@ -7,6 +7,13 @@
   -webkit-tap-highlight-color: transparent;
 }
 
+/* El atributo hidden SIEMPRE gana: sin esto, cualquier display:flex/grid de
+   un componente pisa el hidden del HTML y muestra cosas que no deben verse
+   (login sobre el panel, spinner de subida siempre visible, etc). */
+[hidden] {
+  display: none !important;
+}
+
 :root {
   --bg: #0e1117;
   --bg-card: #161b22;
@@ -55,7 +62,7 @@ button, input, textarea, select {
 
 /* ===== Mobile Header (visible sólo en móvil) ===== */
 .mobile-header {
-  display: none;
+  display: flex;
   position: sticky;
   top: 0;
   z-index: 50;
@@ -75,14 +82,18 @@ button, input, textarea, select {
 }
 
 .mobile-header__logo {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  background: linear-gradient(135deg, var(--accent), #6f42c1);
-  display: grid;
-  place-items: center;
-  color: #fff;
-  font-weight: 700;
+  width: 30px;
+  height: 30px;
+  object-fit: contain;
+  filter: drop-shadow(0 2px 6px rgba(33, 150, 243, 0.35));
+}
+
+.mobile-header__brand span {
+  font-size: 15px;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .mobile-header__sync {
@@ -119,15 +130,11 @@ button, input, textarea, select {
 }
 
 .sidebar__logo {
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
-  background: linear-gradient(135deg, var(--accent), #6f42c1);
-  display: grid;
-  place-items: center;
-  font-weight: 700;
-  color: #fff;
-  font-size: 18px;
+  width: 38px;
+  height: 38px;
+  object-fit: contain;
+  flex-shrink: 0;
+  filter: drop-shadow(0 2px 6px rgba(33, 150, 243, 0.35));
 }
 
 .sidebar__title { font-weight: 600; font-size: 14px; }
@@ -203,71 +210,52 @@ button, input, textarea, select {
 .view__title { font-size: 22px; font-weight: 600; }
 .view__desc { color: var(--text-muted); margin-top: 4px; font-size: 13px; }
 
-/* ===== Dropzone ===== */
-.dropzone {
-  border: 2px dashed var(--border);
-  border-radius: var(--radius);
-  padding: 24px 16px;
-  text-align: center;
-  cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
-  position: relative;
-  background: var(--bg-card);
-  margin-bottom: 12px;
-  min-height: 100px;
+/* ===== Adjuntar multimedia (Publicar y mensajes programados) ===== */
+.attach-row {
   display: flex;
   align-items: center;
-  justify-content: center;
-  min-height: 120px;
-  -webkit-user-select: none;
-  user-select: none;
-}
-
-.dropzone:active {
-  border-color: var(--accent);
-  background: var(--bg-elevated);
-}
-
-.dropzone.dragover {
-  border-color: var(--accent);
-  background: rgba(88, 166, 255, 0.08);
-}
-
-.dropzone__placeholder {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
-  color: var(--text-muted);
-  pointer-events: none;
+  margin-bottom: 6px;
 }
 
-.dropzone__text {
-  font-size: 14px;
+.attach-row__name {
+  font-size: 13px;
   color: var(--text);
-  font-weight: 500;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  word-break: break-all;
+  min-width: 0;
+  flex: 1 1 120px;
 }
 
-.dropzone__hint {
+.attach-row--sm .attach-row__name { flex: 1 1 100%; }
+
+.attach-row__hint {
+  display: block;
   font-size: 11px;
   color: var(--text-dim);
+  margin: -2px 2px 10px;
 }
 
-.dropzone__preview {
-  position: relative;
-  width: 100%;
+.attach-preview {
   display: flex;
   flex-direction: column;
-  align-items: center;
   gap: 8px;
+  margin-bottom: 12px;
 }
 
-.dropzone__preview img,
-.dropzone__preview video {
+.attach-preview img,
+.attach-preview video {
   max-width: 100%;
-  max-height: 200px;
+  max-height: 220px;
   border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
 }
+
+.attach-preview img { object-fit: contain; background: var(--bg-elevated); }
 
 .preview-file {
   display: flex;
@@ -288,28 +276,6 @@ button, input, textarea, select {
   text-align: center;
 }
 
-.dropzone__remove {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: var(--danger);
-  color: #fff;
-  border: 0;
-  cursor: pointer;
-  font-size: 20px;
-  line-height: 1;
-  display: grid;
-  place-items: center;
-  z-index: 2;
-}
-
-.dropzone__remove:active {
-  transform: scale(0.9);
-}
-
 /* ===== Fields ===== */
 .field {
   margin-bottom: 16px;
@@ -322,7 +288,8 @@ button, input, textarea, select {
   border-radius: var(--radius);
   color: var(--text);
   padding: 12px 14px;
-  font-size: 15px;
+  /* 16px mínimo: iOS Safari hace zoom al foco si el input es más chico */
+  font-size: 16px;
   transition: border-color 0.15s;
 }
 
@@ -336,7 +303,7 @@ button, input, textarea, select {
   min-height: 140px;
   font-family: inherit;
   line-height: 1.6;
-  font-size: 15px;
+  font-size: 16px;
 }
 
 .field__hint-row {
@@ -529,9 +496,8 @@ button, input, textarea, select {
   flex-wrap: wrap;
   margin-bottom: 2px;
   font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* Sin white-space:nowrap: con nombre largo + badges se cortaba en móvil */
+  word-break: break-word;
 }
 
 .target-item__icon {
@@ -583,6 +549,60 @@ button, input, textarea, select {
 .target-item__admin-badge--member {
   background: rgba(125, 133, 144, 0.15);
   color: var(--text-muted);
+}
+
+/* Aviso de destino duplicado entre cuentas */
+.target-item__dupe {
+  display: inline-block;
+  margin: 2px 0;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(210, 153, 34, 0.14);
+  color: var(--warn);
+  border: 1px solid rgba(210, 153, 34, 0.3);
+}
+
+/* Fila de destino: el item + (opcional) el selector de cuenta que envía */
+.target-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* Selector "⇄ Enviar con" para destinos duplicados */
+.dupe-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 2px;
+  margin-right: 2px;
+  padding: 6px 10px;
+  background: rgba(210, 153, 34, 0.08);
+  border: 1px solid rgba(210, 153, 34, 0.28);
+  border-radius: var(--radius-sm);
+}
+
+.dupe-picker__label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--warn);
+  white-space: nowrap;
+}
+
+.dupe-picker__select {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 6px;
+  cursor: pointer;
 }
 
 /* ===== Empty / Loading ===== */
@@ -915,13 +935,6 @@ button, input, textarea, select {
 
   .view__title { font-size: 24px; }
 
-  .publish-grid {
-    display: grid;
-    grid-template-columns: 2fr 1fr;
-    gap: 20px;
-    align-items: start;
-  }
-
   .targets-card { margin-bottom: 0; }
 
   .toast {
@@ -930,4 +943,705 @@ button, input, textarea, select {
     left: auto;
     margin: 0;
   }
+}
+
+/* ============================================================
+   COMPONENTES NUEVOS — fusión v2 (mobile-first) + v3 (multi-cuenta)
+   Usa los mismos tokens de diseño del panel.
+   ============================================================ */
+
+/* ===== Login ===== */
+.login-screen {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  background:
+    radial-gradient(1200px 600px at 20% -10%, rgba(88, 166, 255, 0.08), transparent 60%),
+    radial-gradient(900px 500px at 110% 110%, rgba(111, 66, 193, 0.08), transparent 60%),
+    var(--bg);
+}
+
+.login-card {
+  width: 100%;
+  max-width: 380px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 28px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  box-shadow: var(--shadow-lg);
+}
+
+.login-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 26px;
+  width: 100%;
+  max-width: 380px;
+}
+
+.login-logo {
+  width: min(290px, 72vw);
+  height: auto;
+  filter:
+    drop-shadow(0 18px 42px rgba(33, 150, 243, 0.38))
+    drop-shadow(0 4px 12px rgba(0, 0, 0, 0.45));
+  animation: logo-float 5.5s ease-in-out infinite;
+}
+
+@keyframes logo-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-logo { animation: none; }
+}
+
+.login-card__error {
+  background: rgba(248, 81, 73, 0.12);
+  border: 1px solid rgba(248, 81, 73, 0.4);
+  color: var(--danger);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.btn--block { width: 100%; }
+
+/* ===== Header móvil: acciones (sync + salir) ===== */
+.mobile-header__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mobile-header__btn {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.mobile-header__btn:active { background: var(--bg-elevated); }
+
+/* ===== Sidebar: usuario + salir ===== */
+.sidebar__user {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--text-muted);
+  overflow: hidden;
+}
+
+.sidebar__user span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ===== Sub-tabs (Publicar / Plantillas / Programadas · Historial / Cuentas / Usuarios) ===== */
+.subtabs {
+  margin-bottom: 16px;
+}
+
+.subtab-panel { animation: fadeIn 0.18s ease; }
+
+/* ===== Badges de estado ===== */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.badge--ok      { background: rgba(63, 185, 80, 0.15);  color: var(--success); border-color: rgba(63, 185, 80, 0.35); }
+.badge--warn    { background: rgba(210, 153, 34, 0.15); color: var(--warn);    border-color: rgba(210, 153, 34, 0.35); }
+.badge--danger  { background: rgba(248, 81, 73, 0.15);  color: var(--danger);  border-color: rgba(248, 81, 73, 0.35); }
+.badge--muted   { background: rgba(125, 133, 144, 0.15);color: var(--text-muted); border-color: rgba(125, 133, 144, 0.35); }
+.badge--info    { background: rgba(88, 166, 255, 0.15); color: var(--accent);  border-color: rgba(88, 166, 255, 0.35); }
+
+/* ===== Chips de cuenta (selector de Destinos) ===== */
+.account-chips {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 12px 14px 4px;
+  scrollbar-width: none;
+}
+
+.account-chips::-webkit-scrollbar { display: none; }
+
+.account-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.account-chip--active {
+  background: rgba(88, 166, 255, 0.12);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.account-chip__dot { width: 8px; height: 8px; }
+
+/* ===== Filas de cuentas (sub-tab Cuentas) y usuarios ===== */
+.account-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.account-row:last-child { border-bottom: 0; }
+
+.account-row__info { flex: 1; min-width: 0; }
+
+.account-row__label {
+  font-weight: 600;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.account-row__meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 5px;
+}
+
+.account-row__actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* ===== Filas de plantillas ===== */
+.template-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.template-row:last-child { border-bottom: 0; }
+
+.template-row__info { flex: 1; min-width: 0; }
+
+.template-row__name {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.template-row__text {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-top: 3px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.template-row__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.template-row__actions,
+.schedule-row__actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* ===== Filas de programaciones ===== */
+.schedule-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.schedule-row:last-child { border-bottom: 0; }
+
+.schedule-row__info { flex: 1; min-width: 0; }
+
+.schedule-row__name {
+  font-weight: 600;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.schedule-row__meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 5px;
+}
+
+.schedule-row__msgs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+/* ===== Editor de programación: mensajes por cuenta ===== */
+.sched-msg {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  margin-bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sched-msg__header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.sched-msg__header .field__input { flex: 1; min-width: 0; }
+
+.sched-msg__tools {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.sched-msg__tplrow {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.sched-msg__tplrow .field__input { flex: 1; min-width: 0; }
+
+.sched-msg__opts {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.sched-msg__targets {
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  background: var(--bg-card);
+}
+
+.sched-msg__copybox { margin-top: 2px; }
+
+.copybox {
+  background: var(--bg-card);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.copybox__accounts {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* ===== Chips de horarios ===== */
+.time-chips {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.time-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(88, 166, 255, 0.12);
+  border: 1px solid rgba(88, 166, 255, 0.35);
+  color: var(--accent);
+  border-radius: 999px;
+  padding: 4px 6px 4px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.time-chip button {
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(88, 166, 255, 0.2);
+  color: var(--accent);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.time-add-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.time-add-row .field__input { max-width: 130px; }
+
+/* ===== Form grid ===== */
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+/* ===== Vinculación QR ===== */
+.linking-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.qr-box {
+  align-self: center;
+  width: min(240px, 70vw);
+  aspect-ratio: 1;
+  background: #fff;
+  border-radius: var(--radius);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+  overflow: hidden;
+}
+
+.qr-box img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: 6px;
+}
+
+.qr-box .empty { color: #4a5160; background: transparent; }
+
+.linking-info {
+  font-size: 13px;
+  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.linking-info p { line-height: 1.5; }
+
+.pairing-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: var(--accent);
+  background: rgba(88, 166, 255, 0.1);
+  border: 1px dashed rgba(88, 166, 255, 0.4);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  text-align: center;
+}
+
+/* ===== Preview de multimedia (plantillas y mensajes) ===== */
+.media-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.media-preview__img,
+.media-preview__video {
+  max-width: 100%;
+  max-height: 220px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+}
+
+.media-preview__img { object-fit: contain; background: var(--bg-elevated); }
+
+.media-preview__audio { width: 100%; }
+
+.media-preview__file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+#preview-server { width: 100%; }
+
+/* ===== Resultados por cuenta ===== */
+.batch-result {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  background: var(--bg-card);
+}
+
+.batch-result__account {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 600;
+  font-size: 13px;
+  padding-bottom: 6px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Destinos omitidos por duplicidad entre cuentas */
+.results__dedupe {
+  border: 1px dashed rgba(210, 153, 34, 0.4);
+  background: rgba(210, 153, 34, 0.06);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+
+.results__dedupe-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--warn);
+  margin-bottom: 4px;
+}
+
+/* ===== Varios ===== */
+.empty--sm {
+  padding: 14px 10px;
+  font-size: 12px;
+}
+
+.btn--danger {
+  color: var(--danger);
+  border-color: rgba(248, 81, 73, 0.35);
+}
+
+.btn--danger:active:not(:disabled) {
+  background: rgba(248, 81, 73, 0.12);
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.actions--editor { justify-content: flex-end; }
+
+/* Botón Publicar de desktop: oculto en móvil (está el FAB) */
+.actions--publish { display: none; }
+
+.decorations-row {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.checkbox--sm span { font-size: 12px; }
+
+/* Herramientas de plantilla dentro del editor */
+.template-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.template-tools__row {
+  display: flex;
+  gap: 8px;
+}
+
+.template-tools__row .field__input { flex: 1; min-width: 0; }
+
+.template-save-row { margin-top: 2px; }
+
+/* Indicador de subida de multimedia */
+.upload-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 8px 4px 0;
+}
+
+.upload-state__spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Tags de permisos sobre grupos (heredados de la lista de destinos) */
+.target-item__tag--member    { background: rgba(125, 133, 144, 0.18); color: var(--text-muted); }
+.target-item__tag--restricted{ background: rgba(210, 153, 34, 0.18);  color: var(--warn); }
+
+/* ============================================================
+   CORRECCIONES MÓVILES (< 768px)
+   Filas que apretaban contenido, cabeceras de sched-msg que no
+   entraban, errores largos que desbordaban, etc.
+   ============================================================ */
+@media (max-width: 767px) {
+  /* Tabs/subtabs: más compactos para que entren 3 en 360px */
+  .tab {
+    font-size: 13px;
+    padding: 10px 4px;
+    gap: 4px;
+  }
+
+  .tab__count { padding: 1px 6px; }
+
+  /* Filas de listas: apilar info arriba y acciones abajo */
+  .template-row,
+  .schedule-row,
+  .account-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .template-row__actions,
+  .schedule-row__actions,
+  .account-row__actions {
+    justify-content: flex-start;
+    padding-top: 2px;
+  }
+
+  /* Errores largos de envío: permitir que bajen de línea */
+  .result-row__status {
+    white-space: normal;
+    text-align: right;
+    max-width: 46%;
+  }
+
+  .result-row { align-items: flex-start; }
+
+  /* Editor de programación: cabecera apilada (select + botones) */
+  .sched-msg__header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .sched-msg__header .field__input { width: 100%; }
+
+  .sched-msg__tools { justify-content: flex-start; }
+
+  /* Destinos dentro del editor: un poco más de alto visible */
+  .sched-msg__targets { max-height: 220px; }
+
+  /* Resultados del envío */
+  .results__header {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  /* Login: menos padding en pantallas chicas */
+  .login-card { padding: 22px 18px; }
+
+  /* Attach row: botones que no se corten */
+  .attach-row .btn { flex-shrink: 0; }
+
+  /* Historial: el texto no debe desbordar la card */
+  .history-batch__text { white-space: normal; }
+}
+
+/* ===== Responsive: tablet/desktop ===== */
+@media (min-width: 768px) {
+  .login-card { padding: 32px 28px; }
+
+  .form-grid {
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  }
+
+  .linking-body {
+    flex-direction: row;
+    align-items: flex-start;
+  }
+
+  .qr-box { flex-shrink: 0; }
+
+  .linking-info { flex: 1; }
+
+  /* En desktop aparece el botón Publicar del panel (el FAB es de móvil) */
+  .actions--publish { display: flex; }
+
+  .sched-msg__targets { max-height: 320px; }
 }

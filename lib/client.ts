@@ -1,6 +1,5 @@
 import makeWASocket, {
   type WASocket,
-  type BaileysEventMap,
   type ConnectionState,
   type AuthenticationState,
   DisconnectReason,
@@ -15,41 +14,100 @@ import makeWASocket, {
 import { Boom } from '@hapi/boom'
 import NodeCache from 'node-cache'
 import pino from 'pino'
-import { promises as fsPromises, existsSync } from 'node:fs'
+import QRCode from 'qrcode'
+import qrTerminal from 'qrcode-terminal'
+import { promises as fsPromises, existsSync, rmSync } from 'node:fs'
+import https from 'node:https'
 import path from 'node:path'
 import { logger } from './logger.ts'
 import { delay, isGroup, isChannel } from './utils.ts'
+import { attachDeliveryWatchers, awaitDelivery, sendWithUploadRetry } from './delivery.ts'
+import { updateAccountStatus, touchAccountConnected, listAccounts } from './db.ts'
 
 const log = logger('client')
 
 export type PairingMethod = 'qr' | 'code'
 
-export interface StartClientOptions {
-  /** Número de teléfono en formato internacional sin + ni espacios. */
+export type AccountStatus = 'pending' | 'linking' | 'connected' | 'disconnected' | 'logged_out'
+
+/**
+ * Estado en memoria de cada cuenta WhatsApp. Varios runtimes viven a la vez,
+ * uno por cuenta vinculada, cada uno con su socket y su carpeta de sesión.
+ */
+export interface AccountRuntime {
+  accountId: number
   phone: string
-  /** Carpeta donde se guardan las credenciales (multi-file JSON). */
-  authFolder: string
-  /** Método de vinculación: 'qr' o 'code'. null = hay sesión existente. */
-  pairingMethod?: PairingMethod | null
-  /** Callback que recibe el QR string a renderizar en consola u otro medio. */
-  onQR?: (qr: string) => void
-  /** Callback que recibe el código de vinculación de 8 dígitos. */
-  onPairingCode?: (code: string) => void
-  /** Callback cuando la conexión queda lista (open). */
-  onReady?: (sock: WASocket) => void
-  /** Callback cuando cambia el estado de conexión (para diagnóstico). */
-  onConnectionUpdate?: (update: Partial<ConnectionState>) => void
-  /** Reconectar automáticamente al perder la conexión. Default: true. */
-  autoReconnect?: boolean
+  status: AccountStatus
+  sock: WASocket | null
+  /** Último QR recibido durante una vinculación (string crudo). */
+  qr: string | null
+  /** QR renderizado como data URL PNG para mostrarlo en el panel. */
+  qrDataUrl: string | null
+  /** Último código de 8 dígitos si la vinculación es por código. */
+  pairingCode: string | null
+  lastEventAt: number
+  reconnectAttempts: number
 }
 
-let sockSingleton: WASocket | null = null
+const runtimes = new Map<number, AccountRuntime>()
+
+/** Carpeta raíz donde viven las sesiones (una subcarpeta por account_id). */
+let AUTH_ROOT = path.resolve(process.cwd(), 'data', 'auth')
+
+export function configureAuthRoot(folder: string): void {
+  AUTH_ROOT = path.resolve(folder)
+}
+
+function authFolderFor(accountId: number): string {
+  return path.join(AUTH_ROOT, String(accountId))
+}
+
+let shuttingDown = false
+
+const MAX_RECONNECT_DELAY_MS = 30_000
+
+const msgRetryCounterCache = new NodeCache({ stdTTL: 60 * 60, useClones: false })
+
+const MAX_STORED_MESSAGES = 5000
+const messageStore = new Map<string, proto.IMessage>()
+
+/**
+ * El upload de multimedia sale por HTTPS a los hosts de WhatsApp, no por el
+ * websocket. Fuerzo IPv4 en el agente porque hay redes/VPS donde la ruta IPv6
+ * está rota y las subidas fallan en todos los hosts.
+ */
+const mediaUploadAgent = new https.Agent({ keepAlive: true, family: 4 })
+
+function rememberMessage(id: string | null | undefined, message: proto.IMessage | null | undefined): void {
+  if (!id || !message) return
+  if (messageStore.size >= MAX_STORED_MESSAGES) {
+    const oldestKey = messageStore.keys().next().value
+    if (oldestKey) messageStore.delete(oldestKey)
+  }
+  messageStore.set(id, message)
+}
+
+let cachedVersion: { version: [number, number, number]; isLatest: boolean } | null = null
+async function getBaileysVersion(): Promise<{ version: [number, number, number]; isLatest: boolean }> {
+  if (!cachedVersion) {
+    cachedVersion = await fetchLatestBaileysVersion()
+  }
+  return cachedVersion
+}
 
 // ---------------------------------------------------------------------------
-// Auth state helpers — patrón "in-memory durante pairing, persist después".
+// Auth state helpers — patrón "in-memory durante vinculación, persist después".
 // ---------------------------------------------------------------------------
 
 type MemoryKeyStore = Map<string, unknown>
+
+interface InFlightLink {
+  state: AuthenticationState
+  keys: MemoryKeyStore
+}
+
+/** Sesiones a medio vincular en este proceso (aún no escritas a disco). */
+const inFlightLinks = new Map<number, InFlightLink>()
 
 function createInMemoryAuthState(): { state: AuthenticationState; keys: MemoryKeyStore } {
   const creds = initAuthCreds()
@@ -106,249 +164,154 @@ async function persistAuthStateToDisk(
   }
 }
 
-function hasExistingSession(folder: string): boolean {
-  return existsSync(path.join(folder, 'creds.json'))
+export function hasSavedSession(accountId: number): boolean {
+  return existsSync(path.join(authFolderFor(accountId), 'creds.json'))
 }
 
-let persistedState: AuthenticationState | null = null
-let persistedMemoryKeys: MemoryKeyStore | null = null
+/* ---------- Runtime helpers ---------- */
 
-let reconnectAttempts = 0
-const MAX_RECONNECT_DELAY_MS = 30_000
-function getReconnectDelay(): number {
-  const d = Math.min(1000 * 2 ** reconnectAttempts, MAX_RECONNECT_DELAY_MS)
-  reconnectAttempts++
-  return d
-}
-
-const msgRetryCounterCache = new NodeCache({ stdTTL: 60 * 60, useClones: false })
-
-const MAX_STORED_MESSAGES = 5000
-const messageStore = new Map<string, proto.IMessage>()
-
-function rememberMessage(id: string | null | undefined, message: proto.IMessage | null | undefined): void {
-  if (!id || !message) return
-  if (messageStore.size >= MAX_STORED_MESSAGES) {
-    const oldestKey = messageStore.keys().next().value
-    if (oldestKey) messageStore.delete(oldestKey)
+function getOrCreateRuntime(accountId: number, phone: string): AccountRuntime {
+  let runtime = runtimes.get(accountId)
+  if (!runtime) {
+    runtime = {
+      accountId,
+      phone: phone ?? '',
+      status: 'pending',
+      sock: null,
+      qr: null,
+      qrDataUrl: null,
+      pairingCode: null,
+      lastEventAt: Date.now(),
+      reconnectAttempts: 0
+    }
+    runtimes.set(accountId, runtime)
   }
-  messageStore.set(id, message)
+  if (phone) runtime.phone = phone
+  return runtime
 }
 
-/* ---------- Funciones públicas: publicación a grupos/canales ---------- */
+function setRuntimeStatus(runtime: AccountRuntime, status: AccountStatus): void {
+  runtime.status = status
+  runtime.lastEventAt = Date.now()
+  updateAccountStatus(runtime.accountId, status)
+}
 
-// Re-exportamos tipos y utilidades puras (que no requieren socket) desde los módulos.
+async function storeQr(runtime: AccountRuntime, qr: string): Promise<void> {
+  runtime.qr = qr
+  runtime.lastEventAt = Date.now()
+  try {
+    runtime.qrDataUrl = await QRCode.toDataURL(qr, { margin: 1, width: 300 })
+  } catch {
+    runtime.qrDataUrl = null
+  }
+  // También lo tiramos a consola por si se vincula desde el server directamente
+  log.info('QR listo para la cuenta ' + runtime.accountId + ' — también visible en el panel.')
+  qrTerminal.generate(qr, { small: true }, (code) => {
+    process.stdout.write('\n' + code + '\n')
+  })
+}
+
+/* ---------- Callback global cuando una cuenta queda lista ---------- */
+
+let onAccountReady: ((accountId: number) => void) | null = null
+
+/** Registra el callback que se dispara cada vez que una cuenta conecta (index.ts lo usa para el banner). */
+export function setAccountReadyCallback(cb: (accountId: number) => void): void {
+  onAccountReady = cb
+}
+
+/* ---------- Sincronización de grupos/canales por cuenta ---------- */
+
 export { normalizeJid, getBotJidVariants } from './groups.ts'
 export { safeStr, extractChannelInfo, type ChannelInfo } from './newsletters.ts'
 
 import {
-  fetchAllGroups as _fetchAllGroups,
-  isBotAdminOfGroup as _isBotAdminOfGroup,
-  isBotOwnerOfGroup as _isBotOwnerOfGroup,
   syncGroups as _syncGroups,
   type SyncGroupsResult
 } from './groups.ts'
 import {
-  fetchSubscribedNewsletters as _fetchSubscribedNewsletters,
   syncNewsletters as _syncNewsletters,
-  fetchAdminNewsletters as _fetchAdminNewsletters,
   type SyncNewslettersResult
 } from './newsletters.ts'
 
-/** Obtiene todos los grupos donde participa el bot. */
-export async function fetchAllGroups(): Promise<import('@fer2809fl/baileys').GroupMetadata[]> {
-  if (!sockSingleton) throw new Error('Socket no inicializado.')
-  return _fetchAllGroups(sockSingleton)
+/** Sincroniza grupos de la cuenta dada con la cache SQL. */
+export async function syncGroups(accountId: number, cacheToDb: boolean = true): Promise<SyncGroupsResult> {
+  const runtime = runtimes.get(accountId)
+  if (!runtime?.sock) throw new Error('La cuenta ' + accountId + ' no está conectada.')
+  return _syncGroups(runtime.sock, cacheToDb, accountId)
 }
 
-/** Devuelve true si el bot es admin del grupo dado. */
-export async function isBotAdminOfGroup(g: import('@fer2809fl/baileys').GroupMetadata): Promise<boolean> {
-  if (!sockSingleton) throw new Error('Socket no inicializado.')
-  return _isBotAdminOfGroup(sockSingleton, g)
+/** Sincroniza canales de la cuenta dada con la cache SQL. */
+export async function syncNewsletters(accountId: number, cacheToDb: boolean = true): Promise<SyncNewslettersResult> {
+  const runtime = runtimes.get(accountId)
+  if (!runtime?.sock) throw new Error('La cuenta ' + accountId + ' no está conectada.')
+  return _syncNewsletters(runtime.sock, cacheToDb, accountId)
 }
 
-/** Devuelve true si el bot es superadmin (owner) del grupo dado. */
-export async function isBotOwnerOfGroup(g: import('@fer2809fl/baileys').GroupMetadata): Promise<boolean> {
-  if (!sockSingleton) throw new Error('Socket no inicializado.')
-  return _isBotOwnerOfGroup(sockSingleton, g)
+async function syncAccountCaches(accountId: number, sock: WASocket): Promise<void> {
+  try {
+    const groupsResult = await _syncGroups(sock, true, accountId)
+    await _syncNewsletters(sock, true, accountId)
+    log.info(`Cuenta ${accountId}: ${groupsResult.adminGroups}/${groupsResult.totalGroups} grupos admin sincronizados.`)
+  } catch (err) {
+    log.warn({ err, accountId }, 'No se pudo sincronizar la caché de grupos de la cuenta.')
+  }
 }
 
-/** Obtiene todos los canales suscritos. */
-export async function fetchSubscribedNewsletters(): Promise<unknown[]> {
-  if (!sockSingleton) throw new Error('Socket no inicializado.')
-  return _fetchSubscribedNewsletters(sockSingleton)
+/* ---------- Conexión del socket ---------- */
+
+interface ConnectOpts {
+  /** true cuando es una vinculación nueva (sin sesión en disco todavía). */
+  freshLink: boolean
+  /** Teléfono en formato internacional (para pedir código de vinculación). */
+  phone?: string
+  /** Método de vinculación para links nuevos: 'qr' o 'code'. */
+  pairingMethod?: PairingMethod | null
 }
 
-/** Devuelve lista de canales donde el bot es admin (fetch en vivo). */
-export async function fetchAdminNewsletters(): Promise<import('./newsletters.ts').ChannelInfo[]> {
-  if (!sockSingleton) throw new Error('Socket no inicializado.')
-  return _fetchAdminNewsletters(sockSingleton)
-}
+async function connect(accountId: number, opts: ConnectOpts): Promise<AccountRuntime> {
+  const runtime = getOrCreateRuntime(accountId, opts.phone ?? '')
 
-/**
- * Sincroniza tanto grupos como canales con la cache SQL.
- * Devuelve la lista de grupos admin (para compatibilidad con código existente).
- */
-export async function getAdminGroups(cacheToDb: boolean = true): Promise<import('@fer2809fl/baileys').GroupMetadata[]> {
-  if (!sockSingleton) throw new Error('Socket no inicializado.')
-
-  const groupsResult = await _syncGroups(sockSingleton, cacheToDb)
-  await _syncNewsletters(sockSingleton, cacheToDb)
-
-  return groupsResult.adminGroupsList
-}
-
-/** Sincroniza sólo grupos. */
-export async function syncGroups(cacheToDb: boolean = true): Promise<SyncGroupsResult> {
-  if (!sockSingleton) throw new Error('Socket no inicializado.')
-  return _syncGroups(sockSingleton, cacheToDb)
-}
-
-/** Sincroniza sólo canales. */
-export async function syncNewsletters(cacheToDb: boolean = true): Promise<SyncNewslettersResult> {
-  if (!sockSingleton) throw new Error('Socket no inicializado.')
-  return _syncNewsletters(sockSingleton, cacheToDb)
-}
-
-/**
- * Envía un mensaje a un JID específico (grupo, canal o DM).
- *
- * Implementa retry automático para errores conocidos de baileys como
- * "Media upload failed on all hosts" (suele ser transitorio).
- *
- * @param jid           Destino
- * @param message       Mensaje ya construido
- * @param maxRetries    Cantidad máxima de reintentos (default: 2)
- */
-export async function sendToTarget(
-  jid: string,
-  message: AnyMessageContent,
-  maxRetries: number = 2
-): Promise<{ jid: string; success: boolean; messageId?: string; error?: string }> {
-  if (!sockSingleton) throw new Error('Socket no inicializado.')
-
-  let lastErr: string | null = null
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      const sent = await sockSingleton.sendMessage(jid, message)
-      if (attempt > 0) {
-        log.info({ jid, attempt: attempt + 1 }, '✓ Enviado (tras retry)')
-      }
-      return {
-        jid,
-        success: true,
-        messageId: sent?.key?.id
-      }
-    } catch (err) {
-      lastErr = err instanceof Error ? err.message : String(err)
-
-      // Errores transitorios conocidos que vale la pena reintentar:
-      //   - "Media upload failed on all hosts" (subida de media falló en todos los hosts)
-      //   - "Connection Closed" (conexión se cerró temporalmente)
-      //   - "Timed Out" (timeout de red)
-      const isTransient = /media upload failed|connection closed|timed out|ETIMEDOUT|ENOTFOUND|ECONNRESET/i.test(lastErr)
-
-      if (attempt < maxRetries && isTransient) {
-        const waitMs = 2000 * (attempt + 1)  // 2s, 4s
-        log.warn({ jid, attempt: attempt + 1, waitMs, err: lastErr }, 'Reintentando envío...')
-        await delay(waitMs)
-        continue
-      }
-
-      log.error({ err: lastErr, jid }, 'Error enviando mensaje (sin más reintentos)')
-      return { jid, success: false, error: lastErr }
-    }
+  if (runtime.sock) {
+    log.debug(`Cuenta ${accountId} ya tiene un socket activo, se ignora la llamada.`)
+    return runtime
   }
 
-  return { jid, success: false, error: lastErr ?? 'unknown error' }
-}
-
-/**
- * Broadcast: envía el mismo mensaje a múltiples JIDs.
- * Devuelve resultados individuales por destino.
- *
- * @param jids         Lista de JIDs destino
- * @param message      Mensaje ya construido (AnyMessageContent)
- * @param delayMs      Delay entre envíos (anti-flood). Default: 1500ms.
- */
-export async function broadcastToTargets(
-  jids: string[],
-  message: AnyMessageContent,
-  delayMs: number = 1500
-): Promise<Array<{ jid: string; success: boolean; messageId?: string; error?: string }>> {
-  const results: Array<{ jid: string; success: boolean; messageId?: string; error?: string }> = []
-  log.info(`Iniciando broadcast a ${jids.length} destino(s)...`)
-
-  for (const jid of jids) {
-    if (!isGroup(jid) && !isChannel(jid)) {
-      log.warn({ jid }, 'JID no es grupo ni canal, se omite.')
-      results.push({ jid, success: false, error: 'JID no es grupo ni canal' })
-      continue
-    }
-
-    const result = await sendToTarget(jid, message)
-    results.push(result)
-
-    if (result.success) {
-      log.info({ jid, messageId: result.messageId }, '✓ Enviado')
-    } else {
-      log.warn({ jid, error: result.error }, '✗ Falló')
-    }
-
-    if (delayMs > 0) {
-      await delay(delayMs)
-    }
-  }
-
-  const okCount = results.filter(r => r.success).length
-  log.info(`Broadcast finalizado: ${okCount}/${jids.length} enviados correctamente.`)
-  return results
-}
-
-/* ---------- Start / Stop del cliente ---------- */
-
-/**
- * Inicia el socket de WhatsApp vinculado al número indicado.
- * Primera vez: genera QR o pairing code según el método elegido.
- * Reconexiones: carga la sesión existente de disco.
- */
-export async function startClient(opts: StartClientOptions): Promise<WASocket> {
-  const { phone, authFolder, pairingMethod = null } = opts
-  const autoReconnect = opts.autoReconnect ?? true
+  const authFolder = authFolderFor(accountId)
 
   let state: AuthenticationState
   let memoryKeys: MemoryKeyStore | null = null
   const saveCredsRef: { current: () => Promise<void> } = { current: async () => {} }
-  let alreadyLinked: boolean
 
-  if (persistedState && persistedMemoryKeys) {
-    state = persistedState
-    memoryKeys = persistedMemoryKeys
-    alreadyLinked = true
-    log.debug('Reconectando con sesión recién vinculada (guardándose en disco)...')
-  } else if (hasExistingSession(authFolder)) {
+  const inFlight = inFlightLinks.get(accountId)
+  if (inFlight) {
+    // Vinculación arrancada en este mismo proceso que aún no terminó de registrar
+    state = inFlight.state
+    memoryKeys = inFlight.keys
+    log.debug(`Cuenta ${accountId}: reintentando vinculación pendiente (en memoria).`)
+  } else if (hasSavedSession(accountId)) {
     const loaded = await useMultiFileAuthState(authFolder)
     state = loaded.state
     saveCredsRef.current = loaded.saveCreds
-    alreadyLinked = true
-    log.debug(`Sesión existente en "${authFolder}", reconectando...`)
-  } else {
+    log.debug(`Cuenta ${accountId}: sesión existente en disco, reconectando...`)
+  } else if (opts.freshLink) {
     const mem = createInMemoryAuthState()
     state = mem.state
     memoryKeys = mem.keys
-    alreadyLinked = false
-    log.info('Sin sesión previa — empezando vinculación nueva (en memoria).')
+    inFlightLinks.set(accountId, { state, keys: mem.keys })
+    log.info(`Cuenta ${accountId}: sin sesión previa — iniciando vinculación nueva (en memoria).`)
+  } else {
+    throw new Error(`La cuenta ${accountId} no tiene sesión guardada. Vinculala primero desde el panel.`)
   }
 
-  persistedState = state
-  persistedMemoryKeys = memoryKeys
+  if (opts.freshLink) {
+    setRuntimeStatus(runtime, 'linking')
+  } else if (runtime.status !== 'connected') {
+    setRuntimeStatus(runtime, 'disconnected')
+  }
 
-  const { version, isLatest } = await fetchLatestBaileysVersion()
-  const metodoLabel = pairingMethod === null
-    ? 'sesión existente'
-    : (pairingMethod === 'qr' ? 'QR' : 'código')
-  log.debug(`baileys v${version.join('.')} (latest=${isLatest}) | método: ${metodoLabel}`)
+  const { version, isLatest } = await getBaileysVersion()
+  log.debug(`Cuenta ${accountId}: baileys v${version.join('.')} (latest=${isLatest}).`)
 
   const baileysInternalLogger = pino({ level: 'silent' })
 
@@ -359,95 +322,135 @@ export async function startClient(opts: StartClientOptions): Promise<WASocket> {
     msgRetryCounterCache,
     logger: baileysInternalLogger,
     generateHighQualityLinkPreview: true,
+    fetchAgent: mediaUploadAgent,
     getMessage: async (key) => {
       if (!key.id) return undefined
       return messageStore.get(key.id)
     }
   }) as WASocket
 
-  // NOTA: NO interceptamos sendMessage como hace el otro bot.
-  // El intercept anterior causaba overhead innecesario y podía interferir
-  // con la subida de media. Si necesitás guardar mensajes salientes para
-  // retry de descifrado, hacerlo en el evento messages.upsert (que ya
-  // captura tanto entrantes como salientes).
+  // Intercept sendMessage para guardar el mensaje saliente en el store.
+  const originalSendMessage = sock.sendMessage.bind(sock)
+  sock.sendMessage = async (jid, content, options) => {
+    const sent = await originalSendMessage(jid, content, options)
+    if (sent?.key?.id && sent?.message) {
+      rememberMessage(sent.key.id, sent.message)
+    }
+    return sent
+  }
 
-  sockSingleton = sock
+  // Veredicto del servidor sobre cada mensaje enviado (ack crudo + updates)
+  attachDeliveryWatchers(sock)
+
+  runtime.sock = sock
+  runtime.lastEventAt = Date.now()
 
   sock.ev.on('creds.update', () => {
-    void saveCredsRef.current()
+    // Un fallo de disco/DB acá no puede tumbar el proceso: se loguea.
+    saveCredsRef.current().catch(err => {
+      log.error({ err, accountId }, 'Error persistiendo credenciales de sesión.')
+    })
   })
 
-  if (!alreadyLinked && pairingMethod === 'code' && opts.onPairingCode) {
+  // Código de vinculación: se pide unos segundos después de abrir el socket
+  if (opts.freshLink && opts.pairingMethod === 'code' && opts.phone) {
+    const phone = opts.phone
     void (async () => {
       await delay(3000)
       try {
         const code = await sock.requestPairingCode(phone)
-        opts.onPairingCode!(code)
+        runtime.pairingCode = code ?? null
+        runtime.lastEventAt = Date.now()
+        const formatted = code?.length === 8 ? code.slice(0, 4) + '-' + code.slice(4, 8) : code
+        log.info(`Código de vinculación de la cuenta ${accountId}: ${formatted}`)
       } catch (err) {
-        log.error({ err }, 'No se pudo obtener el código de vinculación.')
+        log.error({ err, accountId }, 'No se pudo obtener el código de vinculación.')
       }
     })()
   }
 
   sock.ev.on('connection.update', async (update: Partial<ConnectionState>) => {
-    const { connection, lastDisconnect, qr, isNewLogin } = update
+    try {
+    const { connection, lastDisconnect, qr } = update
 
-    opts.onConnectionUpdate?.(update)
-
-    if (qr && pairingMethod === 'qr' && opts.onQR) {
-      opts.onQR(qr)
+    if (qr && opts.freshLink) {
+      await storeQr(runtime, qr)
+    } else if (qr) {
+      // QR con sesión supuestamente existente — raro, pero lo guardamos por si acaso
+      await storeQr(runtime, qr)
     }
 
-    if (isNewLogin) {
-      log.info('¡Dispositivo vinculado correctamente!')
+    if (update.isNewLogin) {
+      log.info(`Cuenta ${accountId}: ¡dispositivo vinculado correctamente!`)
     }
 
     if (connection === 'open') {
-      // La primera vez es info, las siguientes son reconexiones — silenciosas.
-      if (reconnectAttempts === 0) {
-        log.info(`Conectado como ${sock.user?.id ?? phone}`)
+      const isFirstConnect = runtime.reconnectAttempts === 0
+      if (isFirstConnect) {
+        log.info(`Cuenta ${accountId}: conectado como ${sock.user?.id ?? runtime.phone}`)
       } else {
-        log.info('Reconectado.')
+        log.info(`Cuenta ${accountId}: reconectado.`)
       }
-      reconnectAttempts = 0
+      runtime.reconnectAttempts = 0
+      runtime.qr = null
+      runtime.qrDataUrl = null
+      runtime.pairingCode = null
+      setRuntimeStatus(runtime, 'connected')
+      touchAccountConnected(accountId)
 
       if (memoryKeys && state.creds.registered) {
         try {
           await persistAuthStateToDisk(authFolder, state.creds, memoryKeys)
           const loaded = await useMultiFileAuthState(authFolder)
           saveCredsRef.current = loaded.saveCreds
+          inFlightLinks.delete(accountId)
           memoryKeys = null
-          persistedState = null
-          persistedMemoryKeys = null
-          log.info('Sesión persistida en disco correctamente.')
+          log.info(`Cuenta ${accountId}: sesión persistida en disco correctamente.`)
         } catch (err) {
-          log.error({ err }, 'Error guardando sesión en disco, se reintentará en el próximo reconnect.')
+          log.error({ err, accountId }, 'Error guardando sesión en disco, se reintentará en el próximo reconnect.')
         }
+      } else if (inFlightLinks.has(accountId) && state.creds.registered) {
+        // Ya hay sesión en disco pero quedó registro en memoria — limpiamos
+        inFlightLinks.delete(accountId)
       }
 
-      // NOTA: la sincronización de grupos/canales se hace en index.ts onReady
-      // para que se ejecute una sola vez y no en cada reconexión.
-
-      opts.onReady?.(sock)
+      void syncAccountCaches(accountId, sock)
+      onAccountReady?.(accountId)
     }
 
     if (connection === 'close') {
       const statusCode = (lastDisconnect?.error as Boom | undefined)?.output?.statusCode
       const reason = DisconnectReason[statusCode as number] ?? 'UNKNOWN'
-      const shouldReconnect = autoReconnect && statusCode !== DisconnectReason.loggedOut
+      const loggedOut = statusCode === DisconnectReason.loggedOut
 
-      log.warn(`Conexión cerrada (código ${statusCode} — ${reason}).`)
+      log.warn(`Cuenta ${accountId}: conexión cerrada (código ${statusCode} — ${reason}).`)
 
-      if (shouldReconnect) {
-        const d = getReconnectDelay()
-        log.info(`Reintentando en ${Math.round(d / 1000)}s...`)
-        setTimeout(() => { void startClient(opts) }, d)
-      } else {
-        log.error('Sesión cerrada (loggedOut). Borra la carpeta "' + authFolder + '" y volvé a vincular.')
-        persistedState = null
-        persistedMemoryKeys = null
-        process.exit(1)
+      runtime.sock = null
+
+      if (loggedOut) {
+        log.error(`Cuenta ${accountId}: sesión cerrada desde el teléfono (loggedOut). Borra la cuenta del panel y volvé a vincularla.`)
+        setRuntimeStatus(runtime, 'logged_out')
+        inFlightLinks.delete(accountId)
+        return
       }
+
+      if (shuttingDown) return
+
+      // Reintento con backoff exponencial
+      const d = Math.min(1000 * 2 ** runtime.reconnectAttempts, MAX_RECONNECT_DELAY_MS)
+      runtime.reconnectAttempts++
+      setRuntimeStatus(runtime, 'disconnected')
+      log.info(`Cuenta ${accountId}: reintentando en ${Math.round(d / 1000)}s...`)
+      setTimeout(() => {
+        void connect(accountId, { freshLink: false }).catch(err => {
+          log.error({ err, accountId }, 'Error reconectando la cuenta.')
+        })
+      }, d)
+    }
+    } catch (err) {
+      // El handler es async: un error acá sería una unhandled rejection que
+      // (sin red de seguridad) mataría el proceso. Se loguea y se sigue.
+      log.error({ err, accountId }, 'Error procesando connection.update.')
     }
   })
 
@@ -460,22 +463,259 @@ export async function startClient(opts: StartClientOptions): Promise<WASocket> {
     }
   })
 
-  return sock
+  return runtime
 }
 
-/** Devuelve el socket activo, si existe. */
-export function getSocket(): WASocket {
-  if (!sockSingleton) {
-    throw new Error('El socket no está inicializado todavía. Llama a startClient primero.')
-  }
-  return sockSingleton
+/* ---------- API pública del gestor de cuentas ---------- */
+
+/** Conecta una cuenta que ya tiene sesión guardada en disco. */
+export async function startAccount(accountId: number): Promise<AccountRuntime> {
+  return connect(accountId, { freshLink: false })
 }
 
-/** Cierra la conexión limpiamente. */
-export async function stopClient(): Promise<void> {
-  if (sockSingleton) {
-    log.info('Cerrando conexión…')
-    await sockSingleton.end(new Error('shutdown'))
-    sockSingleton = null
+/**
+ * Inicia la vinculación de una cuenta nueva (QR o código).
+ * El QR queda disponible vía getRuntime() para que el panel lo muestre.
+ */
+export async function linkAccount(
+  accountId: number,
+  phone: string,
+  pairingMethod: PairingMethod = 'qr'
+): Promise<AccountRuntime> {
+  if (hasSavedSession(accountId)) {
+    throw new Error('La cuenta ya tiene una sesión guardada. Usá reconectar.')
   }
+  return connect(accountId, { freshLink: true, phone, pairingMethod })
+}
+
+/** Cancela una vinculación en curso (cierra el socket, la cuenta queda pendiente). */
+export function cancelLink(accountId: number): void {
+  const runtime = runtimes.get(accountId)
+  inFlightLinks.delete(accountId)
+  if (runtime?.sock) {
+    try { runtime.sock.end(new Error('link-cancelled')) } catch { /* noop */ }
+    runtime.sock = null
+  }
+  if (runtime) {
+    runtime.qr = null
+    runtime.qrDataUrl = null
+    runtime.pairingCode = null
+    setRuntimeStatus(runtime, 'pending')
+  }
+}
+
+/** Estado actual del runtime de una cuenta (para el panel). */
+export function getRuntime(accountId: number): AccountRuntime | undefined {
+  return runtimes.get(accountId)
+}
+
+/**
+ * Pide el código de 8 dígitos para vincular con número (en vez de QR).
+ * Sólo tiene sentido durante una vinculación en curso.
+ */
+export async function requestPairingCodeFor(accountId: number): Promise<string> {
+  const runtime = runtimes.get(accountId)
+  if (!runtime || !runtime.sock) {
+    throw new Error('La cuenta no está en proceso de vinculación.')
+  }
+  const code = await runtime.sock.requestPairingCode(runtime.phone)
+  runtime.pairingCode = code ?? null
+  runtime.lastEventAt = Date.now()
+  const formatted = code?.length === 8 ? code.slice(0, 4) + '-' + code.slice(4, 8) : code
+  log.info(`Código de vinculación de la cuenta ${accountId}: ${formatted}`)
+  return formatted ?? ''
+}
+
+/** Conecta todas las cuentas que tengan sesión en disco (arranque del bot). */
+export async function startAllSavedAccounts(): Promise<{ started: number; skipped: number }> {
+  const accounts = listAccounts()
+  let started = 0
+  let skipped = 0
+  for (const account of accounts) {
+    if (hasSavedSession(account.id)) {
+      try {
+        await connect(account.id, { freshLink: false, phone: account.phone })
+        started++
+      } catch (err) {
+        log.error({ err, accountId: account.id }, 'No se pudo arrancar la cuenta guardada.')
+      }
+    } else {
+      skipped++
+    }
+  }
+  log.info(`Cuentas arrancadas: ${started} (sin sesión guardada: ${skipped}).`)
+  return { started, skipped }
+}
+
+/** Detiene una cuenta sin borrar su sesión. */
+export async function stopAccount(accountId: number): Promise<void> {
+  const runtime = runtimes.get(accountId)
+  if (runtime?.sock) {
+    log.info(`Cuenta ${accountId}: cerrando conexión…`)
+    try { await runtime.sock.end(new Error('shutdown')) } catch { /* noop */ }
+    runtime.sock = null
+    setRuntimeStatus(runtime, 'disconnected')
+  }
+}
+
+/** Desvincula la cuenta de WhatsApp (logout + borra sesión del disco). */
+export async function unlinkAccount(accountId: number): Promise<void> {
+  const runtime = runtimes.get(accountId)
+  const sock = runtime?.sock ?? null
+  if (runtime) runtime.sock = null
+  try {
+    if (sock) {
+      await sock.logout()
+    }
+  } catch (err) {
+    log.warn({ err, accountId }, 'logout() falló — se borra la sesión local igual.')
+    try { sock?.end(new Error('unlink')) } catch { /* noop */ }
+  }
+  const folder = authFolderFor(accountId)
+  if (existsSync(folder)) {
+    rmSync(folder, { recursive: true, force: true })
+  }
+  inFlightLinks.delete(accountId)
+  if (runtime) {
+    runtime.qr = null
+    runtime.qrDataUrl = null
+    runtime.pairingCode = null
+    setRuntimeStatus(runtime, 'logged_out')
+  }
+  log.info(`Cuenta ${accountId}: desvinculada y sesión borrada del disco.`)
+}
+
+/** Limpieza total al eliminar una cuenta del panel. */
+export async function cleanupAccount(accountId: number): Promise<void> {
+  await unlinkAccount(accountId)
+  runtimes.delete(accountId)
+}
+
+/** Detiene todas las cuentas (apagado ordenado del proceso). */
+export async function stopAllAccounts(): Promise<void> {
+  shuttingDown = true
+  for (const runtime of runtimes.values()) {
+    if (runtime.sock) {
+      try { await runtime.sock.end(new Error('shutdown')) } catch { /* noop */ }
+      runtime.sock = null
+    }
+  }
+}
+
+/** ¿La cuenta tiene socket vivo y estado conectado? */
+export function isAccountConnected(accountId: number): boolean {
+  const runtime = runtimes.get(accountId)
+  return !!runtime?.sock && runtime.status === 'connected'
+}
+
+/* ---------- Envío de mensajes ---------- */
+
+/**
+ * Límite de tiempo por sendMessage (websocket zombie, red colgada, etc.).
+ * Sin esto, un único envío colgado congela TODO el scheduler y los envíos
+ * del panel: los ticks siguen pero el await no avanza nunca.
+ */
+const SEND_TIMEOUT_MS = 60_000
+
+/** Corre la promesa con deadline. Si el timeout gana, se rechaza con error claro. */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} (${Math.round(ms / 1000)}s)`)), ms)
+  })
+  return Promise.race([
+    // El catch/rethrow mantiene la promesa original atada a la carrera: si el
+    // timeout gana primero, su rechazo tardío igual queda "manejado".
+    p.then(v => v, err => { throw err }),
+    timeout
+  ]).finally(() => clearTimeout(timer!))
+}
+
+/**
+ * Broadcast a múltiples JIDs usando la cuenta indicada.
+ * Devuelve resultados individuales por destino.
+ *
+ * @param accountId    Cuenta que envía (debe estar conectada)
+ * @param jids         Lista de JIDs destino
+ * @param messages     Mensaje(s) ya construido(s) — uno, o varios que van
+ *                     juntos al mismo destino (ej: audio + texto)
+ * @param delayMs      Delay base entre destinos (anti-flood). Se le suma jitter aleatorio. Default: 1500ms.
+ */
+export async function broadcastToAccount(
+  accountId: number,
+  jids: string[],
+  messages: AnyMessageContent | AnyMessageContent[],
+  delayMs: number = 1500
+): Promise<Array<{ jid: string; success: boolean; messageId?: string; error?: string }>> {
+  const results: Array<{ jid: string; success: boolean; messageId?: string; error?: string }> = []
+
+  const runtime = runtimes.get(accountId)
+  const sock = runtime?.sock ?? null
+
+  if (!sock || runtime?.status !== 'connected') {
+    const error = 'La cuenta no está conectada'
+    log.warn({ accountId }, 'Broadcast omitido: ' + error + '.')
+    return jids.map(jid => ({ jid, success: false, error }))
+  }
+
+  const msgList: AnyMessageContent[] = Array.isArray(messages) ? messages : [messages]
+
+  log.info(`Cuenta ${accountId}: broadcast a ${jids.length} destino(s), ${msgList.length} mensaje(s) por destino.`)
+
+  for (const jid of jids) {
+    if (!isGroup(jid) && !isChannel(jid)) {
+      log.warn({ jid, accountId }, 'JID no es grupo ni canal, se omite.')
+      results.push({ jid, success: false, error: 'JID no es grupo ni canal' })
+      continue
+    }
+
+    try {
+      const sentIds: string[] = []
+      for (const message of msgList) {
+        const sent = await withTimeout(sendWithUploadRetry(sock, jid, message), SEND_TIMEOUT_MS, `Timeout enviando a ${jid}`)
+        if (sent?.key?.id) sentIds.push(sent.key.id)
+      }
+
+      if (sentIds.length === 0) {
+        // Ningún envío devolvió id de mensaje: no hay forma de confirmar que
+        // haya salido. Se marca como fallo (antes se reportaba "✓ Enviado"
+        // sin haber confirmación, contaminando el historial).
+        results.push({ jid, success: false, error: 'sin confirmación de envío' })
+        log.warn({ jid }, 'El envío no devolvió id de mensaje')
+      } else {
+        const isAlive = () => runtime.status === 'connected' && runtime.sock === sock
+        const verdict = await awaitDelivery(sentIds, isChannel(jid), isAlive)
+        const lastId = sentIds[sentIds.length - 1]
+        if (verdict.ok) {
+          results.push({ jid, success: true, messageId: lastId })
+          log.info({ jid, messageId: lastId }, '✓ Enviado y confirmado por el servidor')
+        } else {
+          results.push({ jid, success: false, error: verdict.error ?? 'sin confirmación' })
+          log.warn({ jid, error: verdict.error }, 'El servidor no aceptó el mensaje')
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      log.error({ err, jid }, 'Error enviando mensaje')
+      results.push({ jid, success: false, error: msg })
+    }
+
+    if (delayMs > 0 && jid !== jids[jids.length - 1]) {
+      // Jitter para no mandar siempre al mismo ritmo exacto
+      await delay(delayMs + Math.floor(Math.random() * 400))
+    }
+  }
+
+  const okCount = results.filter(r => r.success).length
+  log.info(`Cuenta ${accountId}: broadcast finalizado: ${okCount}/${jids.length} enviados correctamente.`)
+  return results
+}
+
+/** Devuelve el socket de una cuenta conectada (para usos internos). */
+export function getAccountSocket(accountId: number): WASocket {
+  const runtime = runtimes.get(accountId)
+  if (!runtime?.sock) {
+    throw new Error('La cuenta ' + accountId + ' no está conectada todavía.')
+  }
+  return runtime.sock
 }

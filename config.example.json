@@ -1,8 +1,6 @@
 {
   "bot": {
-    "phone": "5491112345678",
-    "name": "Publisher Manager",
-    "pairingMethod": "qr"
+    "name": "Publisher Manager"
   },
   "storage": {
     "authFolder": "./data/auth",

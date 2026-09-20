@@ -176,14 +176,11 @@ export function buildMessage(input: BuildMessagePayload): AnyMessageContent {
   }
 
   // Caso 2: multimedia + caption
-  // Siempre incluir mimetype y fileName para mejor compatibilidad con baileys
-  // (el otro bot que funciona bien siempre los pasa).
   const caption = processed.text || undefined
-  const mediaOpts: Record<string, unknown> = {
-    mimetype: input.mimeType ?? 'application/octet-stream'
-  }
+  const mediaOpts: Record<string, unknown> = {}
   if (caption) mediaOpts.caption = caption
   if (input.fileName) mediaOpts.fileName = input.fileName
+  if (input.mimeType) mediaOpts.mimetype = input.mimeType
   if (contextInfo) mediaOpts.contextInfo = contextInfo
   else if (processed.mentionedJid) mediaOpts.contextInfo = { mentionedJid: processed.mentionedJid }
 
@@ -196,7 +193,7 @@ export function buildMessage(input: BuildMessagePayload): AnyMessageContent {
       // Audio no soporta caption ni contextInfo de la misma forma
       return { audio: input.media, mimetype: input.mimeType ?? 'audio/mpeg', ptt: false } as AnyMessageContent
     case 'document':
-      // Document requiere mimetype obligatorio
+      // Document requiere mimetype obligatorio en esta versión de baileys
       return {
         document: input.media,
         mimetype: input.mimeType ?? 'application/octet-stream',

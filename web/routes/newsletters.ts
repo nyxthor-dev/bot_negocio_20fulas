@@ -1,28 +1,40 @@
 /**
- * Rutas API para gestión de CANALES (@newsletter).
+ * Rutas API para gestión de CANALES (@newsletter) por cuenta.
  *
- *   GET  /api/newsletters              -> lista canales admin (desde cache SQL)
- *   POST /api/newsletters/refresh      -> fuerza sincronización con WhatsApp
- *   GET  /api/newsletters/all          -> lista TODOS los canales suscritos
+ *   GET  /api/newsletters?account_id=N     -> lista canales admin de esa cuenta (cache SQL)
+ *   POST /api/newsletters/refresh          -> sincroniza canales de una cuenta { account_id }
  */
 
 import type { FastifyInstance } from 'fastify'
+import { getAdminGroups, getAccount } from '../../lib/db.ts'
 import { syncNewsletters } from '../../lib/client.ts'
-import { getAllCachedGroups } from '../../lib/db.ts'
 import { logger } from '../../lib/logger.ts'
 
 const log = logger('routes:newsletters')
 
+function resolveOwnedAccount(adminId: number, bodyOrQuery: { account_id?: number | string } | undefined): number | null {
+  const raw = bodyOrQuery?.account_id
+  const accountId = Number(raw)
+  if (!Number.isInteger(accountId)) return null
+  const account = getAccount(accountId)
+  if (!account || account.admin_id !== adminId) return null
+  return accountId
+}
+
 export async function registerNewslettersRoutes(app: FastifyInstance): Promise<void> {
-  // GET /api/newsletters -> devuelve lista cacheada de canales admin
-  app.get('/newsletters', async (_req, reply) => {
+  // GET /newsletters -> lista cacheada de canales admin de una cuenta
+  app.get('/newsletters', async (req, reply) => {
     try {
-      const all = getAllCachedGroups()
-      // Filtrar sólo canales @newsletter con is_admin=1
-      const channels = all.filter(g => g.jid.endsWith('@newsletter') && g.is_admin === 1)
+      const accountId = resolveOwnedAccount(req.admin!.id, req.query as { account_id?: string })
+      if (!accountId) {
+        return reply.code(400).send({ error: 'Falta account_id o la cuenta no es tuya.' })
+      }
+
+      const cached = getAdminGroups(accountId).filter(g => g.jid.endsWith('@newsletter'))
       return {
-        count: channels.length,
-        newsletters: channels.map(c => ({
+        account_id: accountId,
+        count: cached.length,
+        newsletters: cached.map(c => ({
           jid: c.jid,
           name: c.name,
           is_admin: c.is_admin === 1,
@@ -36,15 +48,22 @@ export async function registerNewslettersRoutes(app: FastifyInstance): Promise<v
     }
   })
 
-  // POST /api/newsletters/refresh -> sincroniza canales con WhatsApp
-  app.post('/newsletters/refresh', async (_req, reply) => {
+  // POST /newsletters/refresh -> sincroniza canales de una cuenta con WhatsApp
+  app.post('/newsletters/refresh', async (req, reply) => {
     try {
-      log.info('Iniciando sincronización de canales con WhatsApp...')
-      const result = await syncNewsletters(true)
-      log.info(`Sincronización de canales completada: ${result.adminCount}/${result.total} admin`)
+      const body = req.body as { account_id?: number } | undefined
+      const accountId = resolveOwnedAccount(req.admin!.id, body)
+      if (!accountId) {
+        return reply.code(400).send({ error: 'Falta account_id o la cuenta no es tuya.' })
+      }
 
-      const cached = getAllCachedGroups().filter(g => g.jid.endsWith('@newsletter') && g.is_admin === 1)
+      log.info(`Sincronizando canales de la cuenta ${accountId}...`)
+      const result = await syncNewsletters(accountId, true)
+      log.info(`Sincronización de canales de cuenta ${accountId}: ${result.adminCount}/${result.total} admin`)
+
+      const cached = getAdminGroups(accountId).filter(g => g.jid.endsWith('@newsletter'))
       return {
+        account_id: accountId,
         total: result.total,
         admin_count: result.adminCount,
         count: cached.length,
@@ -59,35 +78,7 @@ export async function registerNewslettersRoutes(app: FastifyInstance): Promise<v
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       log.error({ err: msg }, 'POST /newsletters/refresh')
-      return reply.code(500).send({
-        error: 'Error sincronizando canales.',
-        details: msg
-      })
-    }
-  })
-
-  // GET /api/newsletters/all -> TODOS los canales del cache (admin y no admin)
-  app.get('/newsletters/all', async (_req, reply) => {
-    try {
-      const all = getAllCachedGroups().filter(g => g.jid.endsWith('@newsletter'))
-      return {
-        count: all.length,
-        admin_count: all.filter(g => g.is_admin === 1).length,
-        newsletters: all.map(c => ({
-          jid: c.jid,
-          name: c.name,
-          is_admin: c.is_admin === 1,
-          is_owner: c.is_owner === 1,
-          last_seen: c.last_seen
-        }))
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      log.error({ err: msg }, 'GET /newsletters/all')
-      return reply.code(500).send({
-        error: 'Error listando todos los canales.',
-        details: msg
-      })
+      return reply.code(500).send({ error: 'Error sincronizando canales (¿está conectada la cuenta?).', details: msg })
     }
   })
 }

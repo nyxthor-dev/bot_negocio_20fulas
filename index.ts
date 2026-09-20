@@ -1,23 +1,53 @@
-import { createInterface } from 'node:readline/promises'
-import { stdin as input, stdout as output } from 'node:process'
-import qrTerminal from 'qrcode-terminal'
-import { resolve, join } from 'node:path'
-import { existsSync } from 'node:fs'
+import { resolve, join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { dirname } from 'node:path'
-
-import { startClient, type PairingMethod } from './lib/client.ts'
-import { loadConfig, type BotConfig } from './lib/config.ts'
-import { openDatabase, closeDatabase, getAdminGroups as getCachedAdminGroups } from './lib/db.ts'
+import { existsSync, readdirSync, mkdirSync, renameSync } from 'node:fs'
+import { startScheduler, stopScheduler } from './lib/scheduler.ts'
+import {
+  startAllSavedAccounts,
+  stopAllAccounts,
+  configureAuthRoot,
+  setAccountReadyCallback
+} from './lib/client.ts'
+import { executeAndLog } from './lib/publishService.ts'
+import { loadConfig } from './lib/config.ts'
+import {
+  openDatabase,
+  closeDatabase,
+  listAccounts,
+  listAdmins,
+  countActiveSchedules,
+  insertAccount
+} from './lib/db.ts'
 import { ensureAdminCredentials, printCredentialsBox } from './lib/adminAuth.ts'
+import { configureMediaDir } from './lib/media.ts'
 import { silenceConsoleNoise } from './lib/consoleFilter.ts'
 import { logger } from './lib/logger.ts'
-import { isValidPhone, readPackageInfo } from './lib/utils.ts'
 import { startWebServer, stopWebServer } from './web/server.ts'
 
 const log = logger('index')
 
 silenceConsoleNoise()
+
+/* ---------- Red de seguridad del proceso ----------
+ *
+ * Sin esto, una promesa rechazada sin handler (un callback de Baileys, un
+ * error de disco en saveCreds, un EPIPE en stdout) tumba TODO el proceso
+ * en Node >= 15: panel web, scheduler y todas las sesiones de WhatsApp.
+ *
+ *  - unhandledRejection: se loguea y se sigue (el estado no está corrupto).
+ *  - uncaughtException: se loguea y se sale con código 1 (estado potencial-
+ *    mente corrupto; Render/Docker/systemd reinician el proceso).
+ */
+process.on('unhandledRejection', (reason) => {
+  log.error({ err: reason }, 'Promesa rechazada sin handler (el proceso sigue).')
+})
+process.on('uncaughtException', (err) => {
+  try {
+    log.error({ err }, 'Excepción no capturada: se cierra el proceso para reinicio limpio.')
+  } finally {
+    process.exit(1)
+  }
+})
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -34,29 +64,24 @@ function clearConsole(): void {
   }
 }
 
-// Flags globales: el banner se imprime UNA sola vez en toda la vida del proceso,
-// y la sincronización inicial se hace UNA sola vez (las reconexiones no la
-// re-disparan, eso se hace vía el botón "Sincronizar" del panel si hace falta).
+// Flag global: el banner se imprime UNA sola vez en toda la vida del proceso.
 let bannerAlreadyPrinted = false
-let initialSyncDone = false
 
 /**
  * Banner ASCII del usuario.
  * Debajo: stats compactas en una sola línea.
  */
 function printBanner(opts: {
-  phone: string
-  sessionActive: boolean
-  adminGroupsCount: number
-  totalGroupsCount: number
-  adminChannelsCount: number
-  totalChannelsCount: number
+  adminsCount: number
+  accountsTotal: number
+  accountsConnected: number
+  activeSchedules: number
   webUrl: string | null
 }): void {
   if (bannerAlreadyPrinted) return
   bannerAlreadyPrinted = true
 
-  const { phone, sessionActive, adminGroupsCount, totalGroupsCount, adminChannelsCount, totalChannelsCount, webUrl } = opts
+  const { adminsCount, accountsTotal, accountsConnected, activeSchedules, webUrl } = opts
 
   const lines: string[] = []
   // Banner ASCII arte del usuario
@@ -67,65 +92,68 @@ function printBanner(opts: {
   lines.push("'----------------------------------------------------------'")
   lines.push('')
 
-  // Stats compactas en una sola línea
-  const sessionIcon = sessionActive ? GREEN + '✓' + RESET : YELLOW + '○' + RESET
-  const sessionPart = `${sessionIcon} ${DIM}Sesión${RESET} ${CYAN}${phone}${RESET}`
-  const groupsPart = `${DIM}Grupos${RESET} ${GREEN}${adminGroupsCount}${RESET}${DIM}/${RESET}${totalGroupsCount}`
-  const channelsPart = `${DIM}Canales${RESET} ${GREEN}${adminChannelsCount}${RESET}${DIM}/${RESET}${totalChannelsCount}`
+  const accountsIcon = accountsConnected > 0 ? GREEN + '✓' + RESET : YELLOW + '○' + RESET
+  const accountsPart = `${accountsIcon} ${DIM}Cuentas${RESET} ${GREEN}${accountsConnected}${RESET}${DIM}/${RESET}${accountsTotal}`
+  const adminsPart = `${DIM}Admins${RESET} ${CYAN}${adminsCount}${RESET}`
+  const schedulesPart = `${DIM}Programadas${RESET} ${CYAN}${activeSchedules}${RESET}`
   const webPart = webUrl
     ? `${DIM}Panel${RESET} ${CYAN}${webUrl}${RESET}`
     : `${DIM}Panel${RESET} ${YELLOW}off${RESET}`
 
   process.stdout.write(lines.join('\n') + '\n')
-  process.stdout.write(`  ${sessionPart}  ${groupsPart}  ${channelsPart}  ${webPart}\n\n`)
+  process.stdout.write(`  ${accountsPart}  ${adminsPart}  ${schedulesPart}  ${webPart}\n\n`)
 }
 
-async function resolvePhone(cfg: BotConfig): Promise<string> {
-  const fromConfig = cfg.bot.phone?.trim()
-  if (fromConfig && isValidPhone(fromConfig)) return fromConfig
-
-  if (!process.stdin.isTTY) {
-    log.error('bot.phone no configurado y no hay TTY para pedirlo.')
-    log.error('Configurá bot.phone en config.json.')
-    process.exit(1)
+function currentStats(webUrl: string | null) {
+  const accounts = listAccounts()
+  const connected = accounts.filter(a => a.status === 'connected').length
+  return {
+    adminsCount: listAdmins().length,
+    accountsTotal: accounts.length,
+    accountsConnected: connected,
+    activeSchedules: countActiveSchedules(),
+    webUrl
   }
+}
 
-  const rl = createInterface({ input, output })
+/**
+ * Migración desde la v2 (mono-cuenta): si la carpeta de sesión tiene
+ * creds.json directo en la raíz (formato viejo) y todavía no hay cuentas
+ * registradas, se crea la primera cuenta "Cuenta principal" y se mueve la
+ * sesión a data/auth/<account_id> (formato nuevo). Así no hay que
+ * re-escanear el QR al pasar de la versión 2 a esta.
+ */
+function importLegacySessionIfNeeded(authRoot: string, fallbackPhone: string): void {
   try {
-    let phone = ''
-    while (!isValidPhone(phone)) {
-      phone = (await rl.question(
-        'Número a vincular (formato internacional, ej: 5491112345678):\n> '
-      )).trim()
-      if (!isValidPhone(phone)) {
-        output.write('Número inválido (7-15 dígitos, sin + ni espacios).\n')
+    if (listAccounts().length > 0) return
+    if (!existsSync(join(authRoot, 'creds.json'))) return
+
+    const admins = listAdmins()
+    if (admins.length === 0) {
+      log.warn('Migración v2: hay sesión legacy pero no hay admins; se omite.')
+      return
+    }
+
+    const accountId = insertAccount(admins[0].id, 'Cuenta principal', fallbackPhone)
+    const targetDir = join(authRoot, String(accountId))
+    mkdirSync(targetDir, { recursive: true })
+
+    // Mover TODO el contenido de la raíz (creds.json, session-*.json, etc.)
+    // a la subcarpeta de la cuenta. Si algo falla, se continua con lo demás.
+    for (const entry of readdirSync(authRoot)) {
+      if (entry === String(accountId)) continue
+      try {
+        renameSync(join(authRoot, entry), join(targetDir, entry))
+      } catch (err) {
+        log.warn({ err }, `Migración v2: no se pudo mover ${entry}.`)
       }
     }
-    return phone
-  } finally {
-    rl.close()
+
+    log.info(`Migración v2: sesión importada como cuenta #${accountId} ("Cuenta principal").`)
+  } catch (err) {
+    // Best-effort: si falla, el usuario siempre puede vincular de nuevo desde el panel.
+    log.warn({ err }, 'Migración v2: no se pudo importar la sesión legacy.')
   }
-}
-
-async function resolvePairingMethod(cfg: BotConfig): Promise<PairingMethod> {
-  const fromConfig = cfg.bot.pairingMethod
-  if (fromConfig === 'qr' || fromConfig === 'code') return fromConfig
-  return 'qr'
-}
-
-function printPairingCodeBox(formatted: string): void {
-  const lines = [
-    '',
-    '╔════════════════════════════════════════════════════╗',
-    '║   CÓDIGO DE VINCULACIÓN:  ' + formatted + '              ║',
-    '╚════════════════════════════════════════════════════╝',
-    '',
-    '>> A tu teléfono debería llegarle una notificación push de WhatsApp.',
-    '>> O manualmente: WhatsApp > Dispositivos vinculados > Vincular un dispositivo > Vincular con número.',
-    '>> Ingresá el código: ' + formatted,
-    ''
-  ]
-  output.write(lines.join('\n') + '\n')
 }
 
 async function main(): Promise<void> {
@@ -133,18 +161,16 @@ async function main(): Promise<void> {
   const cfg = loadConfig()
   process.env.LOG_LEVEL = cfg.logging.level
 
-  const pkg = readPackageInfo()
-
-  // 1. Abrir SQLite
+  // 1. Abrir SQLite (incluye migraciones desde el esquema v2)
   openDatabase(cfg.storage.dbPath)
 
-  // 2. Bootstrap credenciales admin
+  // 2. Bootstrap del admin inicial (superadmin, sólo si no hay ninguno)
   const adminCreds = ensureAdminCredentials()
   if (adminCreds) {
     printCredentialsBox(adminCreds)
   }
 
-  // 3. Arrancar el panel web INMEDIATAMENTE
+  // 3. Arrancar el panel web INMEDIATAMENTE (antes que WhatsApp)
   let webUrl: string | null = null
   if (cfg.web.enabled) {
     try {
@@ -155,100 +181,44 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4. Resolver teléfono
-  const phone = await resolvePhone(cfg)
+  // 4. Preparar la carpeta de sesiones (una subcarpeta por cuenta) y la de multimedia
+  const authRoot = resolve(__dirname, cfg.storage.authFolder)
+  configureAuthRoot(authRoot)
+  configureMediaDir(resolve(__dirname, dirname(cfg.storage.dbPath), 'media'))
 
-  // 5. Resolver authFolder
-  const authFolder = resolve(__dirname, cfg.storage.authFolder)
+  // 4b. Migración v2: la sesión única vieja pasa a ser la primera cuenta
+  importLegacySessionIfNeeded(authRoot, cfg.bot.phone ?? '')
 
-  // 6. Determinar método de vinculación
-  const hasSession = existsSync(join(authFolder, 'creds.json'))
-  const pairingMethod: PairingMethod | null = hasSession
-    ? null
-    : await resolvePairingMethod(cfg)
+  // 5. Conectar todas las cuentas que tengan sesión guardada
+  await startAllSavedAccounts()
 
-  // 7. Arrancar socket baileys
-  await startClient({
-    phone,
-    authFolder,
-    pairingMethod,
-    onQR: (qr) => {
-      log.info('Escaneá este QR desde WhatsApp > Dispositivos vinculados:')
-      qrTerminal.generate(qr, { small: true }, (code) => {
-        output.write('\n' + code + '\n')
-      })
-    },
-    onPairingCode: (code) => {
-      const formatted = code.length === 8
-        ? code.slice(0, 4) + '-' + code.slice(4, 8)
-        : code
-      printPairingCodeBox(formatted)
-    },
-    onReady: async (sock) => {
-      // Sincronizar grupos/canales.
-      // Si la sync inicial ya terminó con éxito, no repetir (el usuario puede
-      // forzarla desde el panel). Pero si la sync inicial falló (conexión caída
-      // a mitad), re-intentar en la próxima reconexión.
-      if (initialSyncDone) {
-        log.debug('Reconectado — la sincronización inicial ya se hizo.')
-        return
-      }
-
-      // Pequeña espera para que la conexión se estabilice (evitar race conditions)
-      await new Promise(r => setTimeout(r, 1500))
-
-      try {
-        const groupsResult = await (await import('./lib/client.ts')).syncGroups(true)
-        const newslettersResult = await (await import('./lib/client.ts')).syncNewsletters(true)
-
-        // Si detectamos al menos 1 admin o 0 grupos totales (sin grupos donde participa),
-        // consideramos que la sincronización fue exitosa.
-        // Si hay grupos pero 0 admin, podría ser que la sync se cortó a mitad
-        // — en ese caso, marcamos initialSyncDone=false para re-intentar en reconexión.
-        if (groupsResult.totalGroups > 0 && groupsResult.adminGroups === 0) {
-          log.warn(`Sync inicial detectó 0 admin en ${groupsResult.totalGroups} grupos — re-intentando en próxima reconexión.`)
-          // No marcamos initialSyncDone, así que la próxima reconexión lo re-intenta
-        } else {
-          initialSyncDone = true
-        }
-
-        // Si la primera sync fue exitosa y el banner aún no se imprimió, hacerlo
-        if (!bannerAlreadyPrinted) {
-          printBanner({
-            phone,
-            sessionActive: true,
-            adminGroupsCount: groupsResult.adminGroups,
-            totalGroupsCount: groupsResult.totalGroups,
-            adminChannelsCount: newslettersResult.adminCount,
-            totalChannelsCount: newslettersResult.total,
-            webUrl
-          })
-        }
-      } catch (err) {
-        log.warn({ err }, 'No se pudo sincronizar grupos al cache.')
-        // No marcamos initialSyncDone — la próxima reconexión lo re-intenta
-        // Aun así imprimir el banner la primera vez
-        if (!bannerAlreadyPrinted) {
-          printBanner({
-            phone,
-            sessionActive: true,
-            adminGroupsCount: 0,
-            totalGroupsCount: 0,
-            adminChannelsCount: 0,
-            totalChannelsCount: 0,
-            webUrl
-          })
-        }
-      }
-      void sock // sock unused
-    }
+  // 6. Arrancar el scheduler de publicaciones programadas
+  startScheduler(async (accountId, jids, text, decorations, adminId, scheduleId, mediaId) => {
+    const r = await executeAndLog({
+      adminId,
+      accountId,
+      targetJids: jids,
+      text,
+      decorations: decorations ?? null,
+      scheduleId,
+      mediaId: mediaId ?? null
+    })
+    return { sent: r.sent, failed: r.failed }
   })
+
+  // 7. Banner con stats (al conectar la primera cuenta, o fallback a los 10s)
+  setAccountReadyCallback(() => {
+    printBanner(currentStats(webUrl))
+  })
+  setTimeout(() => {
+    printBanner(currentStats(webUrl))
+  }, 10_000)
 
   const shutdown = async (signal: string) => {
     log.info('Señal ' + signal + ' — cerrando…')
+    stopScheduler()
+    await stopAllAccounts()
     await stopWebServer()
-    const { stopClient } = await import('./lib/client.ts')
-    await stopClient()
     closeDatabase()
     process.exit(0)
   }

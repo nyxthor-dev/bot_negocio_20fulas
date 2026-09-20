@@ -1,0 +1,12 @@
+.git
+.gitignore
+node_modules
+data
+test-data
+config.json
+*.log
+*.zip
+download
+Dockerfile
+.dockerignore
+render.yaml

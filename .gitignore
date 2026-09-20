@@ -1,17 +1,15 @@
+# Dependencias
 node_modules/
-dist/
-data/auth/
-data/media/
-data/*.db
-data/*.db-journal
-data/*.db-wal
-data/*.db-shm
+
+# Datos locales (sesiones, multimedia, sqlite)
+data/
 config.json
 .env
+
+# Logs
+logs/
 *.log
+
+# Sistema / editor
 .DS_Store
-scripts/
-tool-results/
-download/
-upload/
-skills/
+Thumbs.db

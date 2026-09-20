@@ -1,191 +1,234 @@
 /**
- * Rutas API para publicación de mensajes.
+ * Rutas API para publicación inmediata de mensajes.
  *
- *   POST /api/publish           -> envía texto/multimedia a destinos
- *   GET  /api/publish/history   -> últimos batches (cada uno = 1 publicación agrupada)
- *   GET  /api/publish/history/:id  -> detalles de un batch específico (destinos individuales)
+ *   POST /api/publish           -> envía a una o varias cuentas (1 batch por cuenta)
+ *   GET  /api/publish/history   -> últimos batches del admin (cada uno = 1 envío agrupado)
+ *   GET  /api/publish/history/:id -> detalles de un batch (destinos individuales)
  *
- * Formato: multipart/form-data (acepta tanto archivos como JSON fields)
- *   - text          (string, requerido salvo que haya media)
- *   - target_jids   (string JSON, opcional — default: todos los admin)
- *   - decorations   (string JSON, opcional — {forwarded: true, ...})
- *   - media         (file, opcional — imagen/video/audio/documento)
- *   - media_type    (string, opcional — forzar tipo: 'sticker' para .webp)
+ * El body acepta items por cuenta, cada uno con sus propios destinos, su
+ * propio texto (o multimedia, o ambos combinados):
+ *
+ *   {
+ *     "items": [
+ *       { "account_id": 1, "text": "...", "target_jids": ["...@g.us"] },
+ *       { "account_id": 2, "media_id": 7, "text": "caption", "target_jids": [...] },
+ *       { "account_id": 3, "media": { "base64": "...", "mime_type": "image/jpeg" }, "target_jids": [...] }
+ *     ],
+ *     "delay_ms": 1500,
+ *     "assign": { "123-456@g.us": 2 }
+ *   }
+ *
+ * Si el mismo grupo/canal aparece seleccionado en varias cuentas, sólo lo
+ * envía una: la cuenta elegida en `assign` para ese jid, o —si no hay
+ * elección— la primera (dedupeCrossAccount). El resto queda en la respuesta
+ * como "skipped" para que el panel lo muestre con claridad.
  */
 
 import type { FastifyInstance } from 'fastify'
-import { broadcastToTargets } from '../../lib/client.ts'
-import { buildMessage, type DecorationOptions } from '../../lib/textDecorations.ts'
-import { saveMediaFile, type MediaFile } from '../../lib/media.ts'
-import {
-  getAdminGroups,
-  createPublishBatch,
-  finalizePublishBatch,
-  insertPublishLog,
-  updatePublishLogStatus,
-  getRecentPublishBatches,
-  getPublishLogByBatch
-} from '../../lib/db.ts'
+import type { DecorationOptions } from '../../lib/textDecorations.ts'
+import { getAccount, getRecentPublishBatches, getPublishLogByBatch, getPublishBatchById, deleteMediaRow } from '../../lib/db.ts'
+import { executeAndLog } from '../../lib/publishService.ts'
+import { dedupeCrossAccount } from '../../lib/dedupe.ts'
+import { saveMediaFromBase64, resolveOwnedMedia } from '../../lib/media.ts'
+import { invalidJid, sanitizeDecorations, MAX_TEXT_LEN } from '../../lib/messageValidation.ts'
 import { logger } from '../../lib/logger.ts'
 
 const log = logger('routes:publish')
 
-interface ParsedForm {
+/** Máximo de destinos por item (frena floods en un solo request). */
+const MAX_JIDS_PER_ITEM = 200
+
+interface InlineMediaInput {
+  base64?: string
+  mime_type?: string
+  file_name?: string
+}
+
+interface PublishItem {
+  account_id?: number
+  target_jids?: string[]
   text?: string
-  targetJids?: string[]
-  decorations?: DecorationOptions
-  media?: MediaFile
-  forcedMediaType?: 'image' | 'video' | 'audio' | 'document' | 'sticker'
+  decorations?: Record<string, unknown>
+  /** Multimedia ya subida con POST /api/media */
+  media_id?: number
+  /** Multimedia nueva en el mismo request (se guarda y se referencia) */
+  media?: InlineMediaInput
+}
+
+interface PublishBody {
+  items?: PublishItem[]
+  delay_ms?: number
+  /** Elección del usuario: { jid → account_id } para destinos duplicados. */
+  assign?: Record<string, unknown>
 }
 
 export async function registerPublishRoutes(app: FastifyInstance): Promise<void> {
   app.post('/publish', async (req, reply) => {
-    let parsed: ParsedForm
+    const body = req.body as PublishBody | undefined
+    const items = body?.items
 
-    try {
-      parsed = await parseRequest(req)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      log.warn({ err: msg }, 'Error parseando request de publicación.')
-      return reply.code(400).send({ error: msg })
+    if (!Array.isArray(items) || items.length === 0) {
+      return reply.code(400).send({ error: 'Se requiere "items" con al menos un envío.' })
+    }
+    if (items.length > 10) {
+      return reply.code(400).send({ error: 'Máximo 10 items (cuentas) por publicación.' })
     }
 
-    // Validar: al menos debe haber texto o media
-    const hasText = parsed.text && parsed.text.trim().length > 0
-    const hasMedia = !!parsed.media
+    // Validación completa ANTES de enviar nada
+    const normalized: Array<{ accountId: number; jids: string[]; text: string; decorations: DecorationOptions | null; mediaId: number | null }> = []
+    const pendingInline: Array<{ index: number; media: InlineMediaInput }> = []
+    const savedInlineIds: number[] = []
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i]
+      const accountId = Number(item?.account_id)
 
-    if (!hasText && !hasMedia) {
-      return reply.code(400).send({ error: 'Debe haber al menos texto o un archivo multimedia.' })
-    }
-
-    // Resolver targets
-    let targets: string[]
-    if (parsed.targetJids && parsed.targetJids.length > 0) {
-      targets = parsed.targetJids
-    } else {
-      const cached = getAdminGroups()
-      targets = cached.map(g => g.jid)
-    }
-
-    if (targets.length === 0) {
-      return reply.code(400).send({
-        error: 'No hay destinos. Sincronizá grupos o canales primero.'
-      })
-    }
-
-    // Construir el mensaje según el contenido
-    let message: unknown
-    let contentType: string = 'text'
-    let mediaPath: string | null = null
-    let mediaType: string | null = null
-    let mediaName: string | null = null
-
-    try {
-      if (hasMedia && parsed.media) {
-        // Mensaje con multimedia
-        // Pasar path directo a baileys (sin cargar en memoria) para mejor estabilidad
-        message = buildMessage({
-          text: parsed.text,
-          media: { url: parsed.media.path },
-          mediaType: parsed.media.mediaType,
-          fileName: parsed.media.originalName,
-          mimeType: parsed.media.mimeType,
-          decorations: parsed.decorations
-        })
-        contentType = parsed.media.mediaType
-        mediaPath = parsed.media.relativePath
-        mediaType = parsed.media.mediaType
-        mediaName = parsed.media.originalName
-      } else {
-        // Sólo texto
-        message = buildMessage({
-          text: parsed.text,
-          decorations: parsed.decorations
-        })
-        contentType = 'text'
+      if (!Number.isInteger(accountId)) {
+        return reply.code(400).send({ error: `Item ${i + 1}: falta account_id.` })
       }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      log.error({ err: msg }, 'Error construyendo mensaje.')
-      return reply.code(400).send({ error: 'Error construyendo mensaje: ' + msg })
+      const account = getAccount(accountId)
+      if (!account || account.admin_id !== req.admin!.id) {
+        return reply.code(400).send({ error: `Item ${i + 1}: la cuenta no existe o no es tuya.` })
+      }
+
+      const text = String(item?.text ?? '').trim()
+      if (text.length > MAX_TEXT_LEN) {
+        return reply.code(400).send({ error: `Item ${i + 1}: el texto supera el máximo de ${MAX_TEXT_LEN} caracteres.` })
+      }
+
+      const jids = (item?.target_jids ?? []).filter(j => typeof j === 'string' && j.length > 0)
+      if (jids.length === 0) {
+        return reply.code(400).send({ error: `Item ${i + 1}: elegí al menos un destino.` })
+      }
+      if (jids.length > MAX_JIDS_PER_ITEM) {
+        return reply.code(400).send({ error: `Item ${i + 1}: máximo ${MAX_JIDS_PER_ITEM} destinos por cuenta.` })
+      }
+      const badJid = invalidJid(jids, `Item ${i + 1}`)
+      if (badJid) {
+        return reply.code(400).send({ error: badJid })
+      }
+
+      // Multimedia: id ya subido, o base64 inline (se guarda recién después
+      // de validar TODO, para no dejar archivos huérfanos si un item falla)
+      let mediaId: number | null = null
+      if (item?.media_id !== undefined && item?.media_id !== null) {
+        const mid = Number(item.media_id)
+        if (!Number.isInteger(mid)) {
+          return reply.code(400).send({ error: `Item ${i + 1}: media_id inválido.` })
+        }
+        const owned = resolveOwnedMedia(mid, req.admin!.id)
+        if (!owned.ok) {
+          return reply.code(400).send({ error: `Item ${i + 1}: ${owned.error}` })
+        }
+        mediaId = mid
+      } else if (item?.media && typeof item.media === 'object') {
+        pendingInline.push({ index: i, media: item.media })
+      }
+
+      if (!text && mediaId === null && !(item?.media && typeof item.media === 'object')) {
+        return reply.code(400).send({ error: `Item ${i + 1}: escribí un texto o adjuntá multimedia.` })
+      }
+
+      normalized.push({ accountId, jids, text, decorations: sanitizeDecorations(item.decorations), mediaId })
     }
 
-    // Crear batch
-    const sentAt = Date.now()
-    const decorationsJson = parsed.decorations ? JSON.stringify(parsed.decorations) : null
-
-    const batchId = createPublishBatch({
-      contentType,
-      text: parsed.text ?? null,
-      mediaPath,
-      mediaType,
-      mediaName,
-      decorations: decorationsJson,
-      buttons: null,
-      totalTargets: targets.length,
-      sentAt
-    })
-
-    // Crear entradas por destino (linkeadas al batch)
-    const logIds: number[] = []
-    for (const jid of targets) {
-      const id = insertPublishLog({
-        batch_id: batchId,
-        target_jid: jid,
-        content_type: contentType,
-        text: parsed.text ?? null,
-        media_path: mediaPath,
-        status: 'pending',
-        sent_at: sentAt,
-        error: null
+    // Ya validado todo el body: recién acá se guarda la multimedia inline.
+    // Si un guardo falla, se limpian los anteriores (sin huérfanas en disco).
+    for (const p of pendingInline) {
+      const saved = saveMediaFromBase64({
+        adminId: req.admin!.id,
+        base64: String(p.media.base64 ?? ''),
+        mimeType: String(p.media.mime_type ?? ''),
+        fileName: p.media.file_name
       })
-      logIds.push(id)
+      if (!saved.ok) {
+        for (const m of savedInlineIds) deleteMediaRow(m)
+        return reply.code(400).send({ error: `Item ${p.index + 1}: ${saved.error}` })
+      }
+      savedInlineIds.push(saved.media.id)
+      normalized[p.index].mediaId = saved.media.id
     }
 
-    log.info({
-      targets: targets.length,
-      hasMedia,
-      hasDecorations: !!parsed.decorations,
-      batchId
-    }, 'Iniciando publicación.')
-
-    // Broadcast
-    const delayMs = 1500
-    const results = await broadcastToTargets(targets, message as never, delayMs)
-
-    // Actualizar estado por destino y el batch
-    let sent = 0, failed = 0
-    for (let i = 0; i < results.length; i++) {
-      const r = results[i]
-      const logId = logIds[i]
-      if (r.success) {
-        updatePublishLogStatus(logId, 'sent', null)
-        sent++
-      } else {
-        updatePublishLogStatus(logId, 'failed', r.error ?? 'unknown error')
-        failed++
+    // Un mismo jid repetido entre DOS items de la MISMA cuenta enviaría doble:
+    // se rechaza con error claro en vez de perder el destino en silencio.
+    const seenSame = new Map<string, number>()
+    for (const n of normalized) {
+      for (const jid of n.jids) {
+        const prev = seenSame.get(jid)
+        if (prev !== undefined && prev === n.accountId) {
+          return reply.code(400).send({ error: `El destino ${jid} está repetido en dos items de la misma cuenta.` })
+        }
+        seenSame.set(jid, n.accountId)
       }
     }
 
-    finalizePublishBatch(batchId, sent, failed)
+    const delayMs = Number(body?.delay_ms ?? 1500)
+    if (!Number.isFinite(delayMs) || delayMs < 0 || delayMs > 60000) {
+      return reply.code(400).send({ error: 'delay_ms debe estar entre 0 y 60000 ms.' })
+    }
 
-    log.info({ sent, failed, total: results.length, batchId }, 'Publicación completada.')
+    // Elección del usuario para duplicados: { jid → account_id }.
+    // Se aceptan sólo entradas cuyo account_id participe en este envío
+    // (si no, el dedupe cae al orden determinista).
+    const participantIds = new Set(normalized.map(n => n.accountId))
+    const assign: Record<string, number> = {}
+    if (body?.assign && typeof body.assign === 'object' && !Array.isArray(body.assign)) {
+      for (const [jid, accId] of Object.entries(body.assign)) {
+        const num = Number(accId)
+        if (typeof jid === 'string' && jid.length > 0 && jid.length <= 200 && Number.isInteger(num) && participantIds.has(num)) {
+          assign[jid] = num
+        }
+      }
+    }
+
+    // Deduplicación entre cuentas: si varias cuentas tienen el mismo
+    // grupo/canal elegido, sólo lo envía la elegida (o la primera).
+    const { items: deduped, skipped } = dedupeCrossAccount(normalized, assign)
+    if (skipped.length > 0) {
+      log.info({ skipped: skipped.map(s => ({ accountId: s.accountId, jid: s.jid, keptBy: s.keptByAccountId })) }, `Deduplicados ${skipped.length} destino(s) repetidos entre cuentas.`)
+    }
+
+    // Envío por cuenta (cada una genera su propio batch en el historial)
+    const results = []
+    for (const item of deduped) {
+      if (item.jids.length === 0) continue // todos sus destinos ya los cubre otra cuenta
+      const r = await executeAndLog({
+        adminId: req.admin!.id,
+        accountId: item.accountId,
+        targetJids: item.jids,
+        text: item.text,
+        decorations: item.decorations,
+        delayMs,
+        scheduleId: null,
+        mediaId: item.mediaId
+      })
+      results.push(r)
+    }
+
+    const sent = results.reduce((acc, r) => acc + r.sent, 0)
+    const failed = results.reduce((acc, r) => acc + r.failed, 0)
+    const total = results.reduce((acc, r) => acc + r.total, 0)
 
     return {
-      batch_id: batchId,
-      total: results.length,
+      ok: failed === 0,
+      total,
       sent,
       failed,
-      results
+      batches: results,
+      skipped_total: skipped.length,
+      skipped: skipped.map(s => ({
+        account_id: s.accountId,
+        jid: s.jid,
+        kept_by: s.keptByAccountId
+      }))
     }
   })
 
   /**
-   * GET /api/publish/history -> lista de batches (1 entrada por publicación)
+   * GET /publish/history -> lista de batches (1 entrada por envío por cuenta)
    */
-  app.get('/publish/history', async (_req, reply) => {
+  app.get('/publish/history', async (req, reply) => {
     try {
-      const batches = getRecentPublishBatches(50)
+      const batches = getRecentPublishBatches(50, req.admin!.id)
       return {
         count: batches.length,
         items: batches.map(b => ({
@@ -193,13 +236,13 @@ export async function registerPublishRoutes(app: FastifyInstance): Promise<void>
           sent_at: b.sent_at,
           content_type: b.content_type,
           text: b.text,
-          media_name: b.media_name,
-          media_type: b.media_type,
           decorations: b.decorations ? JSON.parse(b.decorations) : null,
           total_targets: b.total_targets,
           sent_count: b.sent_count,
           failed_count: b.failed_count,
-          status: b.status
+          status: b.status,
+          account_id: b.account_id,
+          schedule_id: b.schedule_id
         }))
       }
     } catch (err) {
@@ -209,13 +252,19 @@ export async function registerPublishRoutes(app: FastifyInstance): Promise<void>
   })
 
   /**
-   * GET /api/publish/history/:id -> detalles de un batch (lista de destinos individuales)
+   * GET /publish/history/:id -> detalles de un batch (lista de destinos individuales)
    */
   app.get<{ Params: { id: string } }>('/publish/history/:id', async (req, reply) => {
     try {
       const batchId = parseInt(req.params.id, 10)
       if (isNaN(batchId)) {
         return reply.code(400).send({ error: 'ID inválido.' })
+      }
+      // Ownership: cada admin sólo ve los detalles de SUS batches
+      // (igual que GET /publish/history, que filtra por admin_id).
+      const batch = getPublishBatchById(batchId, req.admin!.id)
+      if (!batch) {
+        return reply.code(404).send({ error: 'Batch no encontrado.' })
       }
       const details = getPublishLogByBatch(batchId)
       if (details.length === 0) {
@@ -232,68 +281,3 @@ export async function registerPublishRoutes(app: FastifyInstance): Promise<void>
     }
   })
 }
-
-/**
- * Parsea el request multipart y extrae todos los campos.
- */
-async function parseRequest(req: import('fastify').FastifyRequest): Promise<ParsedForm> {
-  const parts = req.parts()
-  const parsed: ParsedForm = {}
-
-  for await (const part of parts) {
-    if (part.type === 'file') {
-      // Archivo multimedia
-      if (part.fieldname !== 'media') {
-        log.warn({ fieldname: part.fieldname }, 'Campo file inesperado, se ignora.')
-        continue
-      }
-      parsed.media = await saveMediaFile(part)
-    } else {
-      // Campo de texto
-      const value = await part.value
-      switch (part.fieldname) {
-        case 'text':
-          parsed.text = String(value || '')
-          break
-        case 'target_jids':
-          try {
-            parsed.targetJids = JSON.parse(String(value))
-            if (!Array.isArray(parsed.targetJids)) {
-              throw new Error('target_jids no es un array')
-            }
-          } catch (err) {
-            throw new Error(`target_jids inválido: ${(err as Error).message}`)
-          }
-          break
-        case 'decorations':
-          try {
-            parsed.decorations = JSON.parse(String(value))
-          } catch {
-            log.warn({ value }, 'decorations no es JSON válido — se ignora.')
-          }
-          break
-        case 'media_type':
-          // Forzar tipo de media (ej: 'sticker')
-          if (['image', 'video', 'audio', 'document', 'sticker'].includes(String(value))) {
-            parsed.forcedMediaType = String(value) as ParsedForm['forcedMediaType']
-            // Si el media ya se guardó, actualizar su tipo
-            if (parsed.media && parsed.forcedMediaType) {
-              parsed.media.mediaType = parsed.forcedMediaType
-            }
-          }
-          break
-        default:
-          // Campo desconocido, ignorar (incluye 'button' si llega de versión vieja)
-          break
-      }
-    }
-  }
-
-  // Si llegó media_type después de media (orden de campos puede variar)
-  if (parsed.forcedMediaType && parsed.media) {
-    parsed.media.mediaType = parsed.forcedMediaType
-  }
-
-  return parsed
-}
-

@@ -1,369 +1,161 @@
-# Publisher Manager Bot v2.1 — Fase 2
+<p align="center">
+  <img src="web/public/img/logo-full.png" alt="Publisher Manager" width="300">
+</p>
 
-Bot de WhatsApp para **reenvío de publicaciones a grupos y canales** donde el dispositivo es administrador, controlado mediante un panel web integrado.
+# Publisher Manager
 
-Construido sobre [`@fer2809fl/baileys`](https://www.npmjs.com/package/@fer2809fl/baileys) + TypeScript + `better-sqlite3` + Fastify.
+Panel de publicaciones **multi-cuenta** para WhatsApp: conectá varios números y reenviá mensajes a grupos y canales desde un panel web **mobile-first**, con plantillas, programaciones, historial de entregas y confirmación real de envío.
 
-## ✨ Novedades de la v2.1 (Fase 2)
+> **v3.5.0** · TypeScript + Fastify + SQLite (better-sqlite3) + `@fer2809fl/baileys`
 
-- ✅ **Panel web integrado** en `web/` arrancado desde `index.ts`
-  - Frontend HTML/CSS/JS vanilla, dark theme, layout sidebar + main
-  - Sin login por ahora (próxima fase)
-  - Vista "Publicar" + vista "Historial"
-  - API REST en `/api/*`
-- ✅ **API de publicación**
-  - `GET /api/groups` — lista grupos admin (cache SQL)
-  - `POST /api/groups/refresh` — sincroniza con WhatsApp
-  - `POST /api/publish` — envía texto con decoraciones
-  - `GET /api/publish/history` — últimas 50 publicaciones
+---
 
-## ✨ Novedades de la v2.0 (Fase 1)
+## ✨ Características
 
-- ❌ **Eliminado el sistema de comandos** (`cmd-loader`, `messageHandler`, `cmd/`). El bot ya no responde a mensajes entrantes con prefijo `!` — es un publicador puro.
-- ✅ **Base de datos SQLite** (`better-sqlite3`) con tablas:
-  - `admin_credentials` — usuario/contraseña del panel web admin
-  - `groups_cache` — caché de grupos donde el bot es admin
-  - `publish_log` — historial de publicaciones enviadas
-- ✅ **Credenciales admin auto-generadas** en la primera ejecución. Se muestran en consola una sola vez y se guardan hasheadas (scrypt) en SQL.
-- ✅ **Módulo de decoración de texto** (`lib/textDecorations.ts`):
-  - Tag "Reenviado" (`isForwarded`)
-  - Tag "Reenviado muchas veces" (`forwardingScore`)
-  - Menciones `@user` (`mentionedJid`)
-  - Negrita `*texto*`, cursiva `_texto_`, tachado `~texto~`, monoespaciado
-  - Link preview enriquecido (`externalAdReply`)
-  - Conversión automática markdown estándar → sintaxis WhatsApp
-- ✅ **Módulo nuevo de botones interactivos nativos** (`lib/interactiveButtons.ts`):
-  - **URL button** — abre un enlace al hacer click
-  - **COPY button** — copia un código al portapapeles
-  - **CALL button** — inicia una llamada telefónica
-  - **REPLY button** — botón de respuesta rápida
-  - **ListMessage** — menú desplegable con secciones y filas (hasta 10)
-  - Soporta máximo 3 botones por mensaje (límite de WhatsApp)
-  - Decoraciones aplicables también a mensajes con botones
+### Multi-cuenta WhatsApp
+- **Vinculá varios números** desde el panel, por **QR** o **código de vinculación**, sin salir del navegador.
+- Cada cuenta maneja sus propios destinos: **grupos y canales**.
+- **Estado de conexión en vivo**, reconexión automática y vincular/desvincular desde *Historial → Cuentas*.
+- **Deduplicación entre cuentas**: si el mismo grupo/canal está seleccionado en varias cuentas, sólo una lo envía y el resto queda marcado como omitido.
+- **Elección de cuenta**: en destinos compartidos aparece un selector **"⇄ Enviar con"** para que ELIJA qué cuenta envía; si la elegida se desconecta en una programación, el destino se **reasigna automáticamente** a otra cuenta participante conectada.
 
-## 📁 Estructura
+### Publicación
+- Editor con formato de WhatsApp (**negrita, cursiva, tachado, monoespaciado**) e **insignia SOLO ADMINS**.
+- **Multimedia hasta 50 MB**: imágenes, video, audio, documentos y **stickers `.webp`** (se envían como sticker).
+- Publicación **inmediata** a múltiples destinos a la vez, con resultado por destino y sección **"⇄ N omitidos"** cuando hay duplicados.
+- Fallback determinista si una elección ya no aplica (cuenta quitada o destino deseleccionado): el envío nunca se pierde por error de configuración.
 
-```
-Publisher Manager-v2/
-├── index.ts                    # Entry point
-├── package.json
-├── tsconfig.json
-├── config.example.json         # Plantilla de configuración
-├── lib/
-│   ├── logger.ts               # Logger pino con colores
-│   ├── consoleFilter.ts        # Filtro de ruido de libsignal/baileys
-│   ├── utils.ts                # Helpers: jid, delay, isValidPhone, etc.
-│   ├── config.ts               # Carga/valida config.json
-│   ├── db.ts                   # SQLite (better-sqlite3) con schema
-│   ├── adminAuth.ts            # Bootstrap de credenciales admin (scrypt)
-│   ├── client.ts               # WASocket + QR + reconexión + broadcast
-│   ├── textDecorations.ts      # Decoradores: forwarded, menciones, markdown
-│   └── interactiveButtons.ts   # Botones nativos: URL / CALL / REPLY / List
-├── web/                        # Panel web (Fastify + HTML/CSS/JS estático)
-│   ├── server.ts               # Arranque del servidor Fastify
-│   ├── routes/
-│   │   ├── groups.ts           # API /api/groups
-│   │   └── publish.ts          # API /api/publish + history
-│   └── public/                 # Frontend estático
-│       ├── index.html         # Estructura del panel (sidebar + main)
-│       ├── styles.css          # Dark theme minimalista
-│       └── app.js              # Lógica del panel (vanilla JS)
-├── scripts/
-│   ├── smoke-test.ts           # Test de bootstrap (DB + admin + builders)
-│   └── web-smoke-test.ts       # Test del servidor web
-└── data/
-    ├── auth/                   # Credenciales de sesión WhatsApp (multi-file JSON)
-    └── bot.db                  # SQLite (se crea solo en primera ejecución)
-```
+### Plantillas
+- Guardá mensajes **reutilizables con multimedia** y destinos precargados.
+- Publicalas cuando quieras con un toque (también por API), con las mismas validaciones y dedupe que la publicación manual.
 
-## 🚀 Instalación
+### Programaciones
+- Frecuencia **una vez, diaria, semanal, mensual o por intervalo**, con ventana horaria configurable.
+- **Zona horaria por administrador** (motor con tick de 20 s).
+- La **elección de cuenta queda guardada** con cada mensaje programado: funciona aunque no haya nadie presente al momento del envío.
+- Timeout de 60 s por mensaje y protección anti-solapamiento: editar una programación mientras se envía no corrompe su estado.
+
+### Historial
+- Registro completo de cada lote publicado: **estado real de entrega (ACK) por destino**, errores explícitos y cuenta que envió.
+- Consultable por cuenta y por fecha.
+
+### Usuarios y seguridad
+- **Múltiples administradores** con roles (`superadmin` / `admin`) gestionados desde el panel.
+- Login con **sesiones en cookie firmada**, contraseñas con **scrypt**, **rate-limit + bloqueo por usuario e IP** y tiempos de respuesta igualados (anti-enumeración).
+- **Protección CSRF**, subida de multimedia **validada en serio** (base64 estricto) y descarga forzada para SVG/HTML/texto (anti-XSS almacenado).
+- Errores 500 sin detalles internos y red de seguridad del proceso (`unhandledRejection` / `uncaughtException`) para reinicios limpios.
+
+### Panel web mobile-first
+- Diseño oscuro pensado para el celular: **botón flotante de publicación**, **bottom-nav** y sidebar de **2 elementos** (Publicar / Historial) con sub-tabs.
+- Interfaz de adjuntos simple y consistente en Publicar, Plantillas y Programadas.
+- Totalmente responsive, verificada en navegador (escritorio y móvil).
+
+### Infraestructura
+- **SQLite embebido**: sin servicios externos; todo vive en `data/` (base, sesiones y multimedia).
+- **Migración automática desde la v2**: la sesión única antigua se importa como "Cuenta principal" sin re-escanear el QR; la base migra sola y el admin se promueve a superadmin.
+- `Dockerfile` multi-stage, `render.yaml` con health check y **170 pruebas** automatizadas.
+
+---
+
+## 🚀 Cómo usarlo
 
 ```bash
-cd Publisher Manager-v2
+git clone https://github.com/nyxthor-dev/bot_negocio_20fulas.git
+cd bot_negocio_20fulas
 npm install
-npm approve-scripts --all      # necesario en npm 11+ para better-sqlite3
-npm rebuild better-sqlite3     # compila el binario nativo
-```
-
-## ⚙️ Configuración
-
-```bash
-cp config.example.json config.json
-```
-
-Editá `config.json` con tu número de teléfono (formato internacional sin `+` ni espacios):
-
-```json
-{
-  "bot": {
-    "phone": "5491112345678",
-    "name": "Publisher Manager",
-    "pairingMethod": null
-  },
-  "storage": {
-    "authFolder": "./data/auth",
-    "dbPath": "./data/bot.db"
-  },
-  "logging": {
-    "level": "info"
-  },
-  "web": {
-    "enabled": true,
-    "port": 3000,
-    "host": "0.0.0.0"
-  }
-}
-```
-
-- `bot.pairingMethod`: `"qr"` para escanear QR, `"code"` para código de 8 dígitos. Default: `"qr"` (sin preguntar por consola).
-- `web.enabled`: `true` para arrancar el panel junto con el bot. `false` para deshabilitarlo.
-- `web.port` y `web.host`: dónde escucha Fastify. `0.0.0.0` escucha en todas las interfaces; `127.0.0.1` sólo localhost.
-
-## 🔁 Reverse proxy (nginx / Caddy / hidencloud / Cloudflare)
-
-El panel web está configurado con `trustProxy: true` para funcionar detrás de un reverse proxy. Algunos puntos clave:
-
-1. **El panel arranca ANTES que WhatsApp** — esto es crítico: aunque WhatsApp no esté conectado todavía, el panel ya responde HTTP en el puerto configurado. Así el reverse proxy nunca recibe "connection refused".
-
-2. **Configuración típica en hidencloud** (o equivalente nginx):
-   - `bot` escucha en `0.0.0.0:3000` (o el puerto que pongas en `web.port`)
-   - Reverse proxy forwardea HTTPS → HTTP `localhost:3000`
-   - Pasar las cabeceras `Host`, `X-Forwarded-For`, `X-Forwarded-Proto`
-
-3. **Ejemplo de nginx**:
-   ```nginx
-   server {
-     listen 443 ssl;
-     server_name panelresend.hidenfree.com;
-
-     ssl_certificate /path/to/cert.pem;
-     ssl_certificate_key /path/to/key.pem;
-
-     location / {
-       proxy_pass http://127.0.0.1:3000;
-       proxy_set_header Host $host;
-       proxy_set_header X-Real-IP $remote_addr;
-       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-       proxy_set_header X-Forwarded-Proto $scheme;
-       proxy_http_version 1.1;
-       proxy_set_header Upgrade $http_upgrade;
-       proxy_set_header Connection "upgrade";
-     }
-   }
-   ```
-
-4. **Troubleshooting**:
-   - Si el navegador te redirige al dominio raíz del proxy (ej: `hidencloud.com`), revisá que el proxy really apunte al puerto local correcto del bot.
-   - Si recibís "connection refused", esperá unos segundos a que el bot arranque (el panel tarda ~1s en estar listo después de iniciar el proceso).
-   - Verificá que el puerto `web.port` esté abierto en el firewall del servidor.
-
-## ▶️ Uso
-
-```bash
 npm start
-# o, con hot reload:
-npm run dev
 ```
 
-### Primera ejecución
+1. **Primer arranque**: la consola imprime las credenciales del superadmin (una sola vez). También podés definirlas antes con `ADMIN_USER` y `ADMIN_PASSWORD`.
+2. **Entrá al panel** en `http://localhost:3000` e iniciá sesión.
+3. **Vinculá tus números** en *Historial → Cuentas* escaneando el QR (o con código de vinculación).
+4. **Publicá**: escribí el mensaje, adjuntá multimedia si querés, marcá los destinos por cuenta y tocá Publicar. Si un destino está en varias cuentas, elegí con cuál enviar.
+5. Opcional: guardá **Plantillas** para reutilizar mensajes y creá **Programadas** para envíos automáticos. Todo queda registrado en el **Historial** con su confirmación de entrega.
 
-1. Se abre SQLite (`data/bot.db`) y se crean las tablas.
-2. Se generan credenciales admin automáticamente (usuario + contraseña aleatoria de 20 chars en 4 grupos).
-3. Se muestran en consola en un cuadro tipo:
-   ```
-   ╔════════════════════════════════════════════════════════════════╗
-   ║   🔐  CREDENCIALES DEL PANEL WEB ADMIN — PRIMERA EJECUCIÓN      ║
-   ║                                                                  ║
-   ║   Usuario:    admin                                             ║
-   ║   Contraseña: XXXXX-XXXXX-XXXXX-XXXXX                           ║
-   ║                                                                  ║
-   ║   ⚠️  Guardá estas credenciales en un lugar seguro.              ║
-   ║   No se volverán a mostrar.                                      ║
-   ╚════════════════════════════════════════════════════════════════╝
-   ```
-4. Se conecta a WhatsApp (QR o pairing code según configuración).
-5. Al conectar, sincroniza la lista de grupos donde es admin y los cachea en SQL.
-6. Si `web.enabled` es `true`, arranca el panel web en `http://localhost:3000`.
+> Sin `config.json` el sistema se configura 100 % por variables de entorno (ver tabla en [Despliegue](#️-despliegue)).
 
-### Ejecuciones siguientes
+| Script | Qué hace |
+|---|---|
+| `npm start` / `npm run dev` | Arranca bot + panel |
+| `npm run create-admin` | Crea un administrador por consola |
+| `npm run typecheck` | Verificación de tipos |
+| `npm test` | Suite de pruebas completa |
 
-- Carga las credenciales admin existentes de SQL (no las vuelve a mostrar).
-- Reconecta usando la sesión persistente en `data/auth/`.
-- Re-sincroniza grupos admins al cache.
-- Arranca el panel web (si está habilitado).
+---
 
-## 🌐 Panel web
+## 🖥️ Despliegue
 
-Accedé desde el navegador a `http://localhost:3000` (o el puerto configurado).
+### Variables de entorno
 
-### Vista "Publicar"
+| Variable | Descripción | Valor por defecto |
+|---|---|---|
+| `PORT` | Puerto del panel | `3000` |
+| `HOST` | Interfaz de escucha | `0.0.0.0` |
+| `WEB_ENABLED` | Activa el panel web | `true` en Docker/Render |
+| `DATA_DIR` | Carpeta de datos (base, sesiones, multimedia) | `./data` |
+| `LOG_LEVEL` | Nivel de logs (`fatal`…`trace`) | `info` |
+| `TZ` | Zona horaria del servidor | hora del sistema |
+| `ADMIN_USER` / `ADMIN_PASSWORD` | Bootstrap del superadmin (sólo si aún no hay admins) | — |
 
-1. Escribí el texto del mensaje en el textarea.
-2. Marcá las decoraciones opcionales:
-   - Tag "Reenviado"
-   - Reenviado muchas veces (forwardingScore 25)
-   - Convertir Markdown (ej: `**bold**` → `*bold*`)
-3. Seleccioná los grupos destino de la lista (o "Seleccionar todos").
-4. Si la lista está vacía, pulsá "Sincronizar" para forzar la actualización desde WhatsApp.
-5. Pulsá "Publicar".
-6. El panel muestra resultados individuales por grupo (enviado / fallido).
+> ⚠️ **Importante**: los datos viven en `data/` (SQLite + sesiones de WhatsApp + multimedia). Para no perder las sesiones entre despliegues, ese directorio debe ser **persistente** (disco en Render, volumen en Docker, carpeta del host en VPS).
 
-### Vista "Historial"
+### Render (1 clic)
 
-Muestra las últimas 50 publicaciones enviadas, con su estado y fecha.
+El repo incluye `render.yaml` (Blueprint) y `Dockerfile`:
 
-### API REST
+1. En Render: **New → Blueprint** apuntando a este repo (o **New → Web Service**; Render detecta el Dockerfile solo).
+2. El health check ya está configurado en `/api/health`.
+3. Variables sugeridas: `WEB_ENABLED=true` y `TZ` (ej. `America/Havana`); opcionalmente `ADMIN_USER`/`ADMIN_PASSWORD` como *sync: false* para el primer arranque.
+4. **Disco persistente**: en planes de pago montá un disco en `/app/data` — en el plan *free* el sistema de archivos es efímero y las sesiones se pierden en cada redeploy.
 
-Todas las rutas están bajo `/api/*`:
-
-| Método | Ruta | Descripción |
-|--------|------|-------------|
-| `GET`  | `/api/groups` | Lista grupos admin (cache) |
-| `POST` | `/api/groups/refresh` | Sincroniza grupos desde WhatsApp |
-| `GET`  | `/api/groups/all` | Lista todos los grupos donde participa el bot |
-| `POST` | `/api/publish` | Envía texto con decoraciones |
-| `GET`  | `/api/publish/history` | Últimas 50 publicaciones |
-
-#### Ejemplo: publicar texto
+### VPS con Docker
 
 ```bash
-curl -X POST http://localhost:3000/api/publish \
-  -H "Content-Type: application/json" \
-  -d '{
-    "text": "Hola *mundo*!",
-    "target_jids": ["120363xxx@g.us"],
-    "decorations": { "forwarded": true, "parseMarkdown": true }
-  }'
+git clone https://github.com/nyxthor-dev/bot_negocio_20fulas.git
+cd bot_negocio_20fulas
+docker build -t publisher-manager .
+
+mkdir -p /opt/publisher-manager/data
+docker run -d --name publisher-manager \
+  -p 3000:3000 \
+  -v /opt/publisher-manager/data:/app/data \
+  -e TZ=America/Havana \
+  --restart unless-stopped \
+  publisher-manager
 ```
 
-## 🧩 Módulos principales
+Actualizar a una versión nueva:
 
-### `lib/textDecorations.ts`
-
-```typescript
-import { buildMessage, forwardedDecoration, mentionsDecoration } from './lib/textDecorations.ts'
-
-const message = buildMessage({
-  text: '*Hola* _mundo_ ~cruel~ ||secreto|| `codigo`',
-  decorations: {
-    forwarded: true,
-    forwardingScore: 25,
-    mentions: [{ phone: '5491112345678', name: 'Juan' }],
-    parseMarkdown: true
-  }
-})
-
-await sock.sendMessage(groupId, message)
+```bash
+git pull
+docker build -t publisher-manager .
+docker rm -f publisher-manager
+# volver a ejecutar el mismo `docker run` de arriba (los datos quedan en el volumen)
 ```
 
-### `lib/interactiveButtons.ts`
+### VPS con Node directo
 
-```typescript
-import {
-  buildTemplateButtonsMessage,
-  urlButton,
-  copyButton,
-  callButton,
-  replyButton
-} from './lib/interactiveButtons.ts'
+Requisitos: **Node.js 18+** (recomendado 22) y herramientas de compilación (`python3 make g++`) por si `better-sqlite3` necesita compilar.
 
-// Mensaje con botones nativos URL / COPY / CALL
-const msg = buildTemplateButtonsMessage({
-  text: 'Elegí una opción:',
-  title: 'Menú principal',
-  footer: 'Publisher Manager Bot',
-  buttons: [
-    urlButton('Visitar web', 'https://ejemplo.com'),
-    copyButton('Copiar código', 'PROMO-2024'),
-    callButton('Llamar', '+5491112345678')
-  ]
-})
-
-await sock.sendMessage(groupId, msg)
+```bash
+git clone https://github.com/nyxthor-dev/bot_negocio_20fulas.git
+cd bot_negocio_20fulas
+npm install
+WEB_ENABLED=true PORT=3000 npm start
 ```
 
-```typescript
-import { buildListMessage } from './lib/interactiveButtons.ts'
+Con **pm2** para dejarlo como servicio:
 
-// Menú tipo lista con secciones
-const list = buildListMessage({
-  text: 'Seleccioná una categoría:',
-  buttonText: 'Ver opciones',
-  title: 'Catálogo',
-  sections: [
-    {
-      title: 'Frutas',
-      rows: [
-        { id: 'f1', title: 'Manzana', description: 'Roja y dulce' },
-        { id: 'f2', title: 'Banana', description: 'Amarilla' }
-      ]
-    },
-    {
-      title: 'Verduras',
-      rows: [
-        { id: 'v1', title: 'Lechuga', description: 'Verde y fresca' }
-      ]
-    }
-  ]
-})
-
-await sock.sendMessage(groupId, list)
+```bash
+npm i -g pm2
+pm2 start npm --name publisher-manager -- start
+pm2 save && pm2 startup
 ```
 
-### `lib/client.ts` — publicación a grupos
+Las sesiones persisten tras reinicios del VPS (viven en `data/`). Para exponerlo al público poné un reverse proxy (nginx/Caddy) delante con HTTPS.
 
-```typescript
-import { getAdminGroups, broadcastToTargets, getSocket } from './lib/client.ts'
+---
 
-// Obtener grupos donde soy admin
-const adminGroups = await getAdminGroups(true)
-const jids = adminGroups.map(g => g.id)
+## 📜 Changelog
 
-// Broadcast a todos los grupos admin
-const results = await broadcastToTargets(jids, message, 1500)
-// results: [{ jid, success, messageId?, error? }, ...]
-```
-
-## 🗄️ Esquema SQL
-
-```sql
-CREATE TABLE admin_credentials (
-  id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  username        TEXT UNIQUE NOT NULL,
-  password_hash   TEXT NOT NULL,    -- scrypt:salt:hash
-  created_at      INTEGER NOT NULL,
-  first_run       INTEGER NOT NULL DEFAULT 1
-);
-
-CREATE TABLE groups_cache (
-  jid             TEXT PRIMARY KEY,
-  name            TEXT NOT NULL DEFAULT '',
-  is_admin        INTEGER NOT NULL DEFAULT 0,
-  is_owner        INTEGER NOT NULL DEFAULT 0,
-  last_seen       INTEGER NOT NULL
-);
-
-CREATE TABLE publish_log (
-  id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  target_jid      TEXT NOT NULL,
-  content_type    TEXT NOT NULL,    -- text|image|video|audio|document|sticker
-  text            TEXT,
-  media_path      TEXT,
-  status          TEXT NOT NULL DEFAULT 'pending',
-  sent_at         INTEGER NOT NULL,
-  error           TEXT
-);
-```
-
-## 🛣️ Roadmap
-
-- ✅ **Fase 1** (esta versión): limpieza + SQL + admin auth + decoraciones + botones nativos
-- 🚧 **Fase 2** (próxima): panel web Fastify + login JWT + página Publicar + upload multimedia
-- 🔮 **Fase 3** (futuro): programación cron, plantillas guardadas, estadísticas, multi-admin
-
-## 📝 Notas
-
-- Las credenciales de sesión se guardan en `data/auth/` (multi-file JSON, no en SQLite).
-- Si WhatsApp cierra sesión (logout), borrar `data/auth/` y volver a vincular.
-- Las credenciales admin se guardan con scrypt + salt de 16 bytes, no con bcrypt (evita dependencias nativas extras).
-- Para recuperar credenciales admin perdidas: borrar la fila en `admin_credentials` y reiniciar el bot.
+El historial detallado de versiones —desde la unión de la versión base con la de Carlos (v3.2.0) hasta la versión final (v3.5.0)— está en **[CHANGELOG.md](CHANGELOG.md)**.
