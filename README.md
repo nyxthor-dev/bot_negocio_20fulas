@@ -8,7 +8,6 @@ Panel de publicaciones **multi-cuenta** para WhatsApp: conectá varios números 
 
 > **v3.5.1** · TypeScript + Fastify + SQLite (better-sqlite3) + `@fer2809fl/baileys`
 >
-> Versión auditada y endurecida (commit `51ecd13`): CSP, rate limit, SameSite=Strict, sesión 8h, Docker non-root, bodyLimit por ruta, WAL checkpoint. Suite de 170 pruebas en verde.
 
 ---
 
