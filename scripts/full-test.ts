@@ -16,6 +16,11 @@ const TEST_DB = resolve(ROOT, 'data', 'test-full.db')
 const TEST_AUTH = resolve(ROOT, 'data', 'test-auth')
 const TEST_MEDIA = resolve(ROOT, 'data', 'test-media')
 
+// Desactivar rate limiting durante los tests (la suite hace muchos publish
+// seguidos; el rate limit de 10/min entraria en la 11a llamada y romperia
+// los asserts de validacion).
+process.env.RATE_LIMIT_DISABLED = '1'
+
 let passed = 0
 let failed = 0
 
@@ -411,6 +416,13 @@ async function main () {
     if (jar.token) headers['Authorization'] = 'Bearer ' + jar.token
     const res = await fetch(url + path, { ...options, headers })
     const data = await res.json().catch(() => ({}))
+    // Capturar token de Set-Cookie si la ruta lo setea (login).
+    // El body ya no incluye el token (defense-in-depth: cookie HttpOnly basta).
+    const setCookie = res.headers.get('set-cookie')
+    if (setCookie) {
+      const m = setCookie.match(/pm_sess=([^;]+)/)
+      if (m) jar.token = decodeURIComponent(m[1])
+    }
     return { status: res.status, data }
   }
 
@@ -421,8 +433,7 @@ async function main () {
   ok('login mal → 401', r.status === 401)
 
   r = await call('/api/auth/login', { method: 'POST', body: JSON.stringify({ username: 'admin', password: creds!.password }) })
-  ok('login bien → 200 con token', r.status === 200 && !!r.data.token)
-  jar.token = r.data.token
+  ok('login bien → 200 y setea cookie pm_sess', r.status === 200 && !!jar.token)
 
   r = await call('/api/auth/status')
   ok('status devuelve al superadmin', r.status === 200 && r.data.admin.role === 'superadmin')

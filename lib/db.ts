@@ -157,6 +157,9 @@ export function openDatabase(dbPath: string = DEFAULT_DB_PATH): Database.Databas
   db = new Database(dbPath)
   db.pragma('journal_mode = WAL')
   db.pragma('foreign_keys = ON')
+  // Checkpoint automatico cada 1000 paginas (~4MB) para evitar que el archivo
+  // bot.db-wal crezca indefinidamente bajo carga (puede llenar disco en VPS chico).
+  db.pragma('wal_autocheckpoint = 1000')
 
   createSchema(db)
   migrateSchema(db)

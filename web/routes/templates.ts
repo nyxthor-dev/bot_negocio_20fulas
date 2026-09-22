@@ -26,10 +26,14 @@ import { deleteMediaIfOrphan, mediaSummary, resolveOwnedMedia } from '../../lib/
 import { executeAndLog } from '../../lib/publishService.ts'
 import { dedupeCrossAccount } from '../../lib/dedupe.ts'
 import { invalidJid, MAX_TEXT_LEN } from '../../lib/messageValidation.ts'
+import { enforceRateLimit } from '../../lib/rateLimit.ts'
 import { logger } from '../../lib/logger.ts'
 
 /** Máximo de destinos por item (frena floods en un solo request). */
 const MAX_JIDS_PER_ITEM = 200
+
+/** Tope de entradas del objeto assign (anti-DoS por loop de validacion). */
+const MAX_ASSIGN_ENTRIES = 200
 
 const log = logger('routes:templates')
 
@@ -150,6 +154,9 @@ export async function registerTemplatesRoutes(app: FastifyInstance): Promise<voi
   // Mismas validaciones que POST /api/publish: ownership de las cuentas,
   // jids válidos, delay acotado y dedupe entre cuentas (con assign).
   app.post<{ Params: { id: string } }>('/templates/:id/publish', async (req, reply) => {
+    // Rate limit estricto para publicaciones (10/min/admin) — igual que POST /api/publish
+    if (!enforceRateLimit(req.admin!.id, reply, 'publish')) return
+
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) return reply.code(400).send({ error: 'ID inválido.' })
 
@@ -217,6 +224,10 @@ export async function registerTemplatesRoutes(app: FastifyInstance): Promise<voi
     const participantIds = new Set(normalized.map(n => n.accountId))
     const assign: Record<string, number> = {}
     if (body?.assign && typeof body.assign === 'object' && !Array.isArray(body.assign)) {
+      const assignKeys = Object.keys(body.assign)
+      if (assignKeys.length > MAX_ASSIGN_ENTRIES) {
+        return reply.code(400).send({ error: `assign admite máximo ${MAX_ASSIGN_ENTRIES} entradas.` })
+      }
       for (const [jid, accId] of Object.entries(body.assign)) {
         const num = Number(accId)
         if (typeof jid === 'string' && jid.length > 0 && jid.length <= 200 && Number.isInteger(num) && participantIds.has(num)) {

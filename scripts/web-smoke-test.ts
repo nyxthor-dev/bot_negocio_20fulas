@@ -13,6 +13,9 @@ import { rmSync, existsSync } from 'node:fs'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const TEST_DB = resolve(__dirname, '..', 'data', 'test-web.db')
 
+// Desactivar rate limiting durante los tests.
+process.env.RATE_LIMIT_DISABLED = '1'
+
 for (const p of [TEST_DB, TEST_DB + '-wal', TEST_DB + '-shm']) {
   if (existsSync(p)) rmSync(p)
 }
@@ -65,15 +68,20 @@ async function main() {
     body: JSON.stringify({ username: creds.username, password: creds.password })
   })
   const loginData = await loginRes.json().catch(() => ({}))
-  if (loginRes.status !== 200 || !loginData.token) {
+  // El token ya no se devuelve en el body (defense-in-depth: la cookie HttpOnly basta).
+  // Lo extraemos de la cabecera Set-Cookie para los tests que lo necesitan como Bearer.
+  const setCookie = loginRes.headers.get('set-cookie') ?? ''
+  const tokenMatch = setCookie.match(/pm_sess=([^;]+)/)
+  if (loginRes.status !== 200 || !tokenMatch) {
     console.error('FAIL: login devolvió', loginRes.status, loginData)
     process.exit(1)
   }
-  console.log('OK: login devuelve token')
+  const token = decodeURIComponent(tokenMatch[1])
+  console.log('OK: login devuelve cookie pm_sess')
 
   console.log('--- TEST: /api/auth/status con token ---')
   const statusRes = await fetch(url + '/api/auth/status', {
-    headers: { Authorization: 'Bearer ' + loginData.token }
+    headers: { Authorization: 'Bearer ' + token }
   })
   const statusData = await statusRes.json().catch(() => ({}))
   if (statusRes.status !== 200 || statusData.admin?.username !== creds.username) {
@@ -84,7 +92,7 @@ async function main() {
 
   console.log('--- TEST: /api/groups autenticado (sin cuentas, con account_id inválida) ---')
   const groupsRes = await fetch(url + '/api/groups?account_id=1', {
-    headers: { Authorization: 'Bearer ' + loginData.token }
+    headers: { Authorization: 'Bearer ' + token }
   })
   const groupsData = await groupsRes.json().catch(() => ({}))
   if (groupsRes.status !== 400) {

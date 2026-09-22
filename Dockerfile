@@ -26,7 +26,11 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
 # data/ = SQLite + sesiones de WhatsApp (montar disco/volumen aquí para persistir)
-RUN mkdir -p /app/data
+RUN mkdir -p /app/data && chown -R node:node /app/data /app
+
+# Correr como usuario no-root (defense-in-depth: si hay RCE, el atacante
+# obtiene el contexto node en vez de root dentro del contenedor).
+USER node
 
 EXPOSE 3000
 

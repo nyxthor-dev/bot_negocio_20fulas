@@ -20,8 +20,12 @@ import { logger } from './logger.ts'
 
 const log = logger('admin-auth')
 
-/** Duración de una sesión de panel: 7 días. */
-export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000
+/** Duración de una sesión de panel: 8 horas.
+ *  Antes era 7 dias, pero un panel de admin que maneja publicacion masiva
+ *  no deberia mantener sesiones abiertas tanto tiempo: si roban la cookie,
+ *  la ventana de explotacion es menor. El admin puede volver a loguearse
+ *  cuando lo necesite (es un panel, no una app de uso continuo). */
+export const SESSION_TTL_MS = 8 * 60 * 60 * 1000
 
 const USERNAME_RE = /^[a-zA-Z0-9_.-]{3,32}$/
 
@@ -113,6 +117,17 @@ export function ensureAdminCredentials(): AdminBootstrapResult | null {
   }
   if (envUser || envPass) {
     log.warn('ADMIN_USER/ADMIN_PASSWORD inválidos (usuario 3-32 chars, password 8-128): se genera contraseña aleatoria.')
+  }
+
+  // En producción NO se debe generar password aleatoria e imprimirla en stdout:
+  // los logs de Docker/Render son accesibles para ops y se pueden filtrar.
+  // Exigir ADMIN_USER/ADMIN_PASSWORD explícitos en NODE_ENV=production.
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(
+      'Producción: definí ADMIN_USER y ADMIN_PASSWORD en el entorno antes del primer arranque. ' +
+      'El bootstrap automático con password aleatoria está deshabilitado en production ' +
+      '(evita que la password inicial quede en logs del contenedor).'
+    )
   }
 
   const username = 'admin'

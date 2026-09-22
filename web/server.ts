@@ -66,9 +66,10 @@ export async function startWebServer(opts: WebServerOptions): Promise<{ url: str
 
   const app = Fastify({
     logger: false,
-    // 75 MB: la subida de multimedia viaja como base64 en JSON
-    // (50 MB de archivo ≈ 69 MB de base64) + texto y metadatos
-    bodyLimit: 75 * 1024 * 1024,
+    // 2 MB para el body global (suficiente para JSON de publish/schedules/templates).
+    // /api/media tiene su propio bodyLimit de 75 MB porque la subida de multimedia
+    // viaja como base64 en JSON (50 MB de archivo ≈ 69 MB de base64).
+    bodyLimit: 2 * 1024 * 1024,
     trustProxy: true             // Crítico para reverse proxy
   })
 
@@ -104,6 +105,28 @@ export async function startWebServer(opts: WebServerOptions): Promise<{ url: str
     reply.header('X-Frame-Options', 'DENY')
     reply.header('Referrer-Policy', 'same-origin')
     reply.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
+
+    // Content-Security-Policy: defense-in-depth contra XSS almacenado.
+    // El frontend (web/public/app.js) usa innerHTML en varios sitios con escapeHtml()
+    // consistente, pero CSP añade una capa adicional: si se descubre una via de bypass
+    // (p.ej. un nombre de grupo WhatsApp con caracteres Unicode especiales), CSP
+    // bloquea la ejecucion de scripts inyectados.
+    // Permitimos: self para todo, data: para QR codes (PNG embebido), blob: para
+    // previews locales de multimedia. NO unsafe-inline ni unsafe-eval.
+    const csp = [
+      "default-src 'self'",
+      "script-src 'self'",
+      "style-src 'self' 'unsafe-inline'",   // app.js tiene algunos style="..." inline
+      "img-src 'self' data: blob:",
+      "media-src 'self' blob:",
+      "connect-src 'self'",
+      "font-src 'self'",
+      "frame-ancestors 'none'",
+      "base-uri 'self'",
+      "form-action 'self'"
+    ].join('; ')
+    reply.header('Content-Security-Policy', csp)
+
     if (req.protocol === 'https') {
       reply.header('Strict-Transport-Security', 'max-age=15552000') // 180 días
     }

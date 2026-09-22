@@ -50,7 +50,11 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
 
     clearUserLoginFailures(username)
     setSessionCookie(req, reply, result.token!, Math.floor(SESSION_TTL_MS / 1000))
-    return { ok: true, token: result.token, admin: result.admin }
+    // Nota: no devolvemos el token en el body. La cookie HttpOnly basta y sobre
+    // (el frontend usa la cookie automaticamente via fetch credentials: 'include').
+    // Exponerlo en JSON es redundante y aumenta la superficie de fuga
+    // (p.ej. si un atacante logra leer responses del navegador via XS-Leak).
+    return { ok: true, admin: result.admin }
   })
 
   app.get('/auth/status', async (req, reply) => {

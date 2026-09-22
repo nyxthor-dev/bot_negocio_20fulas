@@ -40,6 +40,8 @@ async function main () {
   process.env.ADMIN_USER = 'renderadmin'
   process.env.ADMIN_PASSWORD = 'ClaveRender123'
   process.env.LOG_LEVEL = 'warn'
+  // Desactivar rate limiting durante los tests.
+  process.env.RATE_LIMIT_DISABLED = '1'
   delete process.env.HOST
 
   console.log('\n=== Boot simulado estilo Render (sin config.json) ===')
@@ -73,9 +75,13 @@ async function main () {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username: 'renderadmin', password: 'ClaveRender123' })
   })
-  const loginBody = await login.json() as { ok?: boolean; token?: string; admin?: { role?: string } }
+  const loginBody = await login.json() as { ok?: boolean; admin?: { role?: string } }
   ok('login con credenciales de entorno → 200', login.status === 200 && loginBody.ok === true)
-  ok('devuelve token', typeof loginBody.token === 'string' && loginBody.token.length > 20)
+  // Token ya no viene en body; se extrae de Set-Cookie para los tests que lo usan como Bearer.
+  const setCookie = login.headers.get('set-cookie') ?? ''
+  const tokenMatch = setCookie.match(/pm_sess=([^;]+)/)
+  const token = tokenMatch ? decodeURIComponent(tokenMatch[1]) : ''
+  ok('setea cookie pm_sess', token.length > 20)
   ok('rol superadmin', loginBody.admin?.role === 'superadmin')
 
   const wrong = await fetch(`${BASE}/api/auth/login`, {
@@ -89,24 +95,24 @@ async function main () {
   ok('API protegida sin sesión → 401', noAuth.status === 401)
 
   const withToken = await fetch(`${BASE}/api/accounts`, {
-    headers: { Authorization: `Bearer ${loginBody.token}` }
+    headers: { Authorization: `Bearer ${token}` }
   })
   ok('API con Bearer token → 200', withToken.status === 200)
 
   const status = await fetch(`${BASE}/api/auth/status`, {
-    headers: { Authorization: `Bearer ${loginBody.token}` }
+    headers: { Authorization: `Bearer ${token}` }
   })
   const statusBody = await status.json() as { authenticated?: boolean }
   ok('GET /api/auth/status autenticado', status.status === 200 && statusBody.authenticated === true)
 
   const logout = await fetch(`${BASE}/api/auth/logout`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${loginBody.token}` }
+    headers: { Authorization: `Bearer ${token}` }
   })
   ok('logout → 200', logout.status === 200)
 
   const afterLogout = await fetch(`${BASE}/api/accounts`, {
-    headers: { Authorization: `Bearer ${loginBody.token}` }
+    headers: { Authorization: `Bearer ${token}` }
   })
   ok('token revocado tras logout → 401', afterLogout.status === 401)
 

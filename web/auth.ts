@@ -46,15 +46,21 @@ export function readSessionToken(req: FastifyRequest): string | null {
  * Fija la cookie de sesión en la respuesta.
  * La flag Secure se activa cuando la request llega por HTTPS (directo o
  * detrás de reverse proxy con trustProxy), para no romper pruebas en HTTP local.
+ *
+ * SameSite=Strict: la cookie NO se envía en navegaciones top-level GET desde
+ * sitios externos (defense-in-depth contra CSRF). El panel ya tiene mitigación
+ * CSRF (JSON-only Content-Type para POST/PUT/DELETE) pero Strict añade una
+ * capa adicional sin romper UX (el admin entra al panel escribiendo la URL,
+ * no haciendo click en links externos).
  */
 export function setSessionCookie(req: FastifyRequest, reply: FastifyReply, token: string, maxAgeSeconds: number): void {
   const secure = req.protocol === 'https' ? '; Secure' : ''
-  reply.header('Set-Cookie', `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax${secure}; Max-Age=${maxAgeSeconds}`)
+  reply.header('Set-Cookie', `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict${secure}; Max-Age=${maxAgeSeconds}`)
 }
 
 /** Borra la cookie de sesión. */
 export function clearSessionCookie(reply: FastifyReply): void {
-  reply.header('Set-Cookie', `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`)
+  reply.header('Set-Cookie', `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`)
 }
 
 /** 403 con mensaje estándar para rutas de superadmin. */

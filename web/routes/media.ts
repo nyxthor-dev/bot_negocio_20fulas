@@ -18,12 +18,18 @@ import {
   mediaSummary,
   MAX_MEDIA_BYTES
 } from '../../lib/media.ts'
+import { enforceRateLimit } from '../../lib/rateLimit.ts'
 import { logger } from '../../lib/logger.ts'
 
 const log = logger('routes:media')
 
 export async function registerMediaRoutes(app: FastifyInstance): Promise<void> {
-  app.post('/media', async (req, reply) => {
+  // bodyLimit 75MB solo en /media (subida de multimedia como base64 en JSON).
+  // Las demas rutas heredan el limite global pero /media lo necesita alto.
+  app.post('/media', { bodyLimit: 75 * 1024 * 1024 }, async (req, reply) => {
+    // Rate limit generico (30 acciones/min/admin) — frena floods de subida
+    if (!enforceRateLimit(req.admin!.id, reply)) return
+
     const body = req.body as { base64?: string; mime_type?: string; file_name?: string } | undefined
 
     const result = saveMediaFromBase64({
