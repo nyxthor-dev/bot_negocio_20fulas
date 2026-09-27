@@ -9,17 +9,14 @@ services:
     plan: free
     healthCheckPath: /api/health
     envVars:
-      - key: PORT
-        value: "3000"
       - key: WEB_ENABLED
         value: "true"
       - key: TZ
         value: America/Havana
-      # Opcionales (sólo aplican en la PRIMERA ejecución, cuando no hay admins):
-      # - key: ADMIN_USER
-      #   sync: false
-      # - key: ADMIN_PASSWORD
-      #   sync: false
+      - key: ADMIN_USER
+        value: admin
+      - key: ADMIN_PASSWORD
+        value: "kR9mX2pL8qW4nT7vB3jF6hY1sD5gA0cZ"
 
     # Disco persistente para conservar SQLite y las sesiones de WhatsApp entre
     # despliegues (requiere plan pago; en free el sistema de archivos es efímero):
