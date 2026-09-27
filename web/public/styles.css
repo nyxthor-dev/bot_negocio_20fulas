@@ -1645,3 +1645,68 @@ button, input, textarea, select {
 
   .sched-msg__targets { max-height: 320px; }
 }
+
+/* ===== Modo de envío unificado (ahora / programar) ===== */
+
+.send-mode-card {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.send-mode-toggle {
+  display: flex;
+  gap: 4px;
+  background: var(--bg-elevated);
+  padding: 4px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+
+.send-mode-btn {
+  flex: 1;
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  padding: 10px 12px;
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+}
+
+.send-mode-btn:hover {
+  color: var(--text);
+}
+
+.send-mode-btn.active {
+  background: var(--bg-card);
+  color: var(--accent);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.send-mode-btn__icon {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.send-mode-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  animation: fadeIn 0.18s ease;
+}
+
+.send-mode-panel[hidden] { display: none; }
+
+/* Lista de programaciones siempre visible abajo del formulario */
+.schedules-card {
+  margin-top: 16px;
+}

@@ -17,16 +17,15 @@ const state = {
   uploading: false,
   templates: [],
   schedules: [],
-  editingScheduleId: null,
-  schedMsgSeq: 0,
-  schedTimes: [],           // horarios del día del editor (minutos 0-1439)
-  schedAssign: {},          // jid -> account_id elegido (editor de programaciones)
+  editingScheduleId: null,  // si se está editando una programación existente
+  schedTimesSimple: [],     // horarios del día del modo Programar simplificado (minutos 0-1439)
   linkingAccountId: null,
   linkPollTimer: null,
   statusPollTimer: null,
   activeView: 'publish',
   activePubSubtab: 'publish',
-  activeHistSubtab: 'history'
+  activeHistSubtab: 'history',
+  sendMode: 'now'           // 'now' | 'schedule' — toggle del formulario unificado
 }
 
 /* ---------- Helpers ---------- */
@@ -293,8 +292,9 @@ function switchView (viewName) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('view--active'))
   document.getElementById('view-' + viewName).classList.add('view--active')
 
-  // El FAB de Publicar sólo corresponde a la vista Publicar
-  document.getElementById('fab-publish').style.display = viewName === 'publish' ? '' : 'none'
+  // El FAB de Publicar sólo corresponde a la vista Publicar en modo "ahora"
+  const showFab = viewName === 'publish' && state.sendMode === 'now'
+  document.getElementById('fab-publish').style.display = showFab ? '' : 'none'
 
   // Carga perezosa del contenido de la vista
   if (viewName === 'publish') {
@@ -309,14 +309,17 @@ function switchPubSubtab (subtab) {
   document.querySelectorAll('#publish-subtabs .tab').forEach(t => t.classList.toggle('active', t.dataset.subtab === subtab))
   document.getElementById('subtab-publish').hidden = subtab !== 'publish'
   document.getElementById('subtab-templates').hidden = subtab !== 'templates'
-  document.getElementById('subtab-schedules').hidden = subtab !== 'schedules'
+  // La lista de programaciones vive ahora DENTRO de la vista Publicar
+  // (siempre visible abajo del formulario), así que se muestra con su contenedor.
+  document.getElementById('schedules-list-card').style.display = subtab === 'publish' ? '' : 'none'
 
-  // El FAB y el botón publicar sólo aplican al sub-tab de Publicar
-  const showFab = subtab === 'publish'
+  // El FAB de Publicar sólo corresponde al sub-tab de Publicar (modo "ahora")
+  const showFab = subtab === 'publish' && state.sendMode === 'now'
   document.getElementById('fab-publish').style.display = showFab ? '' : 'none'
 
   if (subtab === 'templates') loadTemplates()
-  if (subtab === 'schedules') loadSchedules()
+  // Las programaciones se cargan al entrar a Publicar (la lista siempre visible).
+  if (subtab === 'publish') loadSchedules()
 }
 
 function switchHistSubtab (subtab) {
@@ -872,7 +875,7 @@ function clearMedia () {
   updatePublishButton()
 }
 
-/* ---------- Botón Publicar (FAB móvil + botón desktop) ---------- */
+/* ---------- Botón Publicar / Programar (FAB móvil + botón desktop) ---------- */
 
 function updatePublishButton () {
   const text = document.getElementById('publish-text').value.trim()
@@ -881,8 +884,13 @@ function updatePublishButton () {
   const anyTarget = Object.values(state.selectedJids).some(set => set && set.size > 0)
   // Mientras se sube la multimedia no se puede publicar (faltaria el media_id)
   const disabled = state.publishing || state.uploading || !hasContent || !anyTarget
-  document.getElementById('fab-publish').disabled = disabled
+  // En modo "ahora": el FAB y el botónPublicar ahora se habilitan con el mismo estado.
+  document.getElementById('fab-publish').disabled = disabled || state.sendMode !== 'now'
   document.getElementById('btn-publish').disabled = disabled
+  // En modo "programar": el botón "Crear programación" usa el mismo criterio
+  // (la validación de fecha/hora se hace en submit, no acá).
+  const btnSched = document.getElementById('btn-schedule-simple')
+  if (btnSched) btnSched.disabled = disabled
 }
 
 async function publish () {
@@ -1102,9 +1110,12 @@ async function handleTemplateAction (act, id) {
     switchPubSubtab('publish')
     toast('Plantilla cargada. Elegí los destinos y publicá.', 'success')
   } else if (act === 'sched') {
-    switchPubSubtab('schedules')
-    openScheduleEditor(null, t)
-    toast('Programación iniciada desde la plantilla — elegí repetición, horarios y cuentas.', 'success')
+    // Cargar el contenido de la plantilla en el formulario unificado y
+    // cambiar a modo "programar" para que el usuario defina repetición y horarios.
+    loadTemplateIntoEditor(t)
+    switchPubSubtab('publish')
+    switchSendMode('schedule')
+    toast('Plantilla cargada. Definí la repetición y los horarios abajo.', 'success')
   } else if (act === 'dup') {
     try {
       await api('/templates', {
@@ -1258,13 +1269,19 @@ async function handleScheduleAction (act, id) {
       await api(`/schedules/${id}/resume`, { method: 'POST' })
       loadSchedules()
     } else if (act === 'edit') {
-      openScheduleEditor(id)
+      // Edición se hace dentro del formulario unificado (modo "programar").
+      loadScheduleIntoForm(id)
     } else if (act === 'del') {
       const s = state.schedules.find(x => x.id === id)
       if (!confirmDialog(`¿Eliminar la programación "${s ? s.name : id}"?`)) return
       await api(`/schedules/${id}`, { method: 'DELETE' })
       loadSchedules()
       toast('Programación eliminada.', 'success')
+      // Si se estaba editando esa programación, limpiar el formulario.
+      if (state.editingScheduleId === id) {
+        resetUnifiedForm()
+        switchSendMode('now')
+      }
     }
   } catch (err) {
     if (err.message !== 'Sesión expirada') {
@@ -1273,89 +1290,36 @@ async function handleScheduleAction (act, id) {
   }
 }
 
-/* ---------- Editor de programaciones ---------- */
+/* ---------- Modo de envío unificado (ahora / programar) ---------- */
 
-function openScheduleEditor (scheduleId = null, template = null) {
-  state.editingScheduleId = scheduleId
-  const editor = document.getElementById('schedule-editor')
-  document.getElementById('schedule-editor-title').textContent = scheduleId ? 'Editar programación' : 'Nueva programación'
-  document.getElementById('sched-messages').innerHTML = ''
-  state.schedMsgSeq = 0
-  state.schedTimes = []
-  state.schedAssign = {} // elección de cuenta para duplicados, se hidrata al editar
-  document.getElementById('sched-window-on').checked = false
-
-  if (scheduleId) {
-    const s = state.schedules.find(x => x.id === scheduleId)
-    if (s) {
-      state.schedAssign = (s.assign_map && typeof s.assign_map === 'object') ? { ...s.assign_map } : {}
-      document.getElementById('sched-name').value = s.name
-      document.getElementById('sched-type').value = s.sched_type
-      if (s.sched_type === 'once' && s.scheduled_at) {
-        const d = new Date(s.scheduled_at - new Date().getTimezoneOffset() * 60000)
-        document.getElementById('sched-datetime').value = d.toISOString().slice(0, 16)
-      }
-      state.schedTimes = Array.isArray(s.recur_times) && s.recur_times.length > 0
-        ? [...s.recur_times]
-        : (s.recur_time !== null && s.recur_time !== undefined ? [s.recur_time] : [])
-      if (s.sched_type === 'interval' && s.interval_minutes) {
-        document.getElementById('sched-interval').value = String(s.interval_minutes)
-        if (s.window_start != null && s.window_end != null) {
-          document.getElementById('sched-window-on').checked = true
-          document.getElementById('sched-window-start').value = minutesToHHMM(s.window_start)
-          document.getElementById('sched-window-end').value = minutesToHHMM(s.window_end)
-        }
-      }
-      if (s.recur_dow !== null && s.recur_dow !== undefined) document.getElementById('sched-dow').value = String(s.recur_dow)
-      if (s.recur_dom !== null && s.recur_dom !== undefined) document.getElementById('sched-dom').value = String(s.recur_dom)
-      ;(s.messages || []).forEach(m => addSchedMessageRow(m))
-    }
-  } else {
-    document.getElementById('sched-name').value = ''
-    document.getElementById('sched-type').value = 'daily'
-    document.getElementById('sched-datetime').value = ''
-    document.getElementById('sched-interval').value = '90'
-    state.schedTimes = [9 * 60]
-    if (template) {
-      document.getElementById('sched-name').value = template.name
-      addSchedMessageRow({
-        account_id: state.accounts.length > 0 ? state.accounts[0].id : null,
-        text: template.text || '',
-        target_jids: [],
-        decorations: template.decorations || null,
-        media: template.media || null
-      })
-    } else {
-      addSchedMessageRow(null)
-    }
-  }
-
-  renderSchedTimeChips()
-  updateSchedTypeFields()
-  editor.hidden = false
-  editor.scrollIntoView({ behavior: 'smooth' })
+function switchSendMode (mode) {
+  state.sendMode = mode
+  document.querySelectorAll('#send-mode-toggle .send-mode-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.mode === mode)
+  })
+  document.getElementById('send-mode-now').hidden = mode !== 'now'
+  document.getElementById('send-mode-schedule').hidden = mode !== 'schedule'
+  // El FAB sólo tiene sentido en modo "ahora"
+  const showFab = state.activeView === 'publish' && state.activePubSubtab === 'publish' && mode === 'now'
+  document.getElementById('fab-publish').style.display = showFab ? '' : 'none'
+  updatePublishButton()
 }
 
-function updateSchedTypeFields () {
-  const type = document.getElementById('sched-type').value
-  const isRecur = type === 'daily' || type === 'weekly' || type === 'monthly'
-  document.getElementById('sched-once-fields').hidden = type !== 'once'
-  document.getElementById('sched-recur-fields').hidden = !isRecur
-  document.getElementById('sched-interval-fields').hidden = type !== 'interval'
-  document.getElementById('sched-dow-field').hidden = type !== 'weekly'
-  document.getElementById('sched-dom-field').hidden = type !== 'monthly'
-  document.getElementById('sched-window-fields').hidden = !document.getElementById('sched-window-on').checked
+function updateSimpleSchedFields () {
+  const type = document.getElementById('sched-type-simple').value
+  document.getElementById('simple-once-fields').hidden = type !== 'once'
+  document.getElementById('simple-daily-fields').hidden = type !== 'daily'
+  document.getElementById('simple-interval-fields').hidden = type !== 'interval'
 }
 
-/* ---------- Horarios del día (chips) ---------- */
-
-function renderSchedTimeChips () {
-  const box = document.getElementById('sched-times-chips')
-  if (state.schedTimes.length === 0) {
+function renderSchedTimeChipsSimple () {
+  const box = document.getElementById('sched-times-simple')
+  if (!box) return
+  if (state.schedTimesSimple.length === 0) {
     box.innerHTML = '<span class="field__hint">Sin horarios todavía — agregá al menos uno.</span>'
     return
   }
-  box.innerHTML = state.schedTimes.map((t, i) => `
+  box.innerHTML = state.schedTimesSimple.map((t, i) => `
     <span class="time-chip">
       ${minutesToHHMM(t)}
       <button type="button" data-remove-time="${i}" title="Quitar horario">×</button>
@@ -1363,401 +1327,283 @@ function renderSchedTimeChips () {
   `).join('')
   box.querySelectorAll('[data-remove-time]').forEach(btn => {
     btn.addEventListener('click', () => {
-      state.schedTimes.splice(Number(btn.dataset.removeTime), 1)
-      renderSchedTimeChips()
+      state.schedTimesSimple.splice(Number(btn.dataset.removeTime), 1)
+      renderSchedTimeChipsSimple()
     })
   })
 }
 
-function addSchedTime () {
-  const mins = hhmmToMinutes(document.getElementById('sched-new-time').value)
+function addSchedTimeSimple () {
+  const mins = hhmmToMinutes(document.getElementById('sched-new-time-simple').value)
   if (mins === null) { toast('Elegí una hora válida.', 'error'); return }
-  if (state.schedTimes.includes(mins)) { toast('Ese horario ya está agregado.', 'error'); return }
-  if (state.schedTimes.length >= 20) { toast('Máximo 20 horarios por día.', 'error'); return }
-  state.schedTimes.push(mins)
-  state.schedTimes.sort((a, b) => a - b)
-  renderSchedTimeChips()
+  if (state.schedTimesSimple.includes(mins)) { toast('Ese horario ya está agregado.', 'error'); return }
+  if (state.schedTimesSimple.length >= 20) { toast('Máximo 20 horarios por día.', 'error'); return }
+  state.schedTimesSimple.push(mins)
+  state.schedTimesSimple.sort((a, b) => a - b)
+  renderSchedTimeChipsSimple()
 }
 
-/* ---------- Mensajes de la programación ---------- */
+/**
+ * Carga una programación existente en el formulario unificado para editarla.
+ * - El primer mensaje aporta texto, multimedia y decoraciones.
+ * - Los destinos de TODOS los mensajes se suman a state.selectedJids para
+ *   que la lista de Destinos muestre lo que ya estaba elegido.
+ * - Los horarios/tipo/fecha se cargan en los campos simplificados.
+ * - Si la programación usaba tipos no soportados en el formulario simple
+ *   (weekly/monthly), se avisa y se degrada a 'daily'.
+ */
+function loadScheduleIntoForm (scheduleId) {
+  const s = state.schedules.find(x => x.id === scheduleId)
+  if (!s) { toast('No se encontró la programación.', 'error'); return }
 
-/** Re-renderiza las listas de destinos visibles del editor (sincroniza avisos y elección). */
-function refreshVisibleSchedTargets () {
-  document.querySelectorAll('.sched-msg').forEach(r => {
-    const t = r.querySelector('.sched-msg__targets')
-    if (!t.hidden && r._renderTargets) r._renderTargets()
-  })
-}
+  state.editingScheduleId = scheduleId
+  // Asegurarse de estar en el sub-tab correcto y en modo "programar"
+  if (state.activePubSubtab !== 'publish') switchPubSubtab('publish')
+  switchSendMode('schedule')
 
-function addSchedMessageRow (msg) {
-  const seq = ++state.schedMsgSeq
-  const wrap = document.getElementById('sched-messages')
-  const row = document.createElement('div')
-  row.className = 'sched-msg'
-  row.dataset.seq = String(seq)
+  // Nombre
+  document.getElementById('sched-name-simple').value = s.name || ''
 
-  const accountOptions = state.accounts.map(a =>
-    `<option value="${a.id}" ${msg && msg.account_id === a.id ? 'selected' : ''}>${escapeHtml(a.label)} (${a.status === 'connected' ? 'conectada' : 'no conectada'})</option>`
-  ).join('')
-
-  const tplOptions = ['<option value="">Cargar plantilla…</option>'].concat(
-    state.templates.map(t => `<option value="${t.id}">${escapeHtml(t.name)}</option>`)
-  ).join('')
-
-  row.innerHTML = `
-    <div class="sched-msg__header">
-      <select class="field__input sched-msg__account">
-        ${accountOptions || '<option value="">Sin cuentas</option>'}
-      </select>
-      <div class="sched-msg__tools">
-        <button class="btn btn--ghost btn--sm" data-tool="copy" type="button">Copiar a cuentas…</button>
-        <button class="btn btn--ghost btn--sm btn--danger" data-tool="del" type="button">Quitar</button>
-      </div>
-    </div>
-    <div class="sched-msg__tplrow">
-      <select class="field__input sched-msg__tpl">${tplOptions}</select>
-    </div>
-    <div class="attach-row attach-row--sm">
-      <input type="file" class="sched-msg__file" accept="image/*,video/*,audio/*,.pdf,.txt,.doc,.docx,.odt,.zip" hidden />
-      <button type="button" class="btn btn--ghost btn--sm sched-msg__attachbtn">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
-        <span>Adjuntar</span>
-      </button>
-      <span class="attach-row__name sched-msg__attachname" hidden></span>
-    </div>
-    <textarea class="field__input field__input--textarea sched-msg__text" rows="3" placeholder="Texto de este mensaje (va como caption si hay multimedia)...">${msg ? escapeHtml(msg.text || '') : ''}</textarea>
-    <div class="sched-msg__opts">
-      <label class="checkbox checkbox--sm">
-        <input type="checkbox" class="sched-msg__forwarded" ${msg && msg.decorations && msg.decorations.forwarded ? 'checked' : ''} />
-        <span>Reenviado</span>
-      </label>
-      <button class="btn btn--ghost btn--sm" data-tool="clearmedia" type="button" hidden>Quitar media</button>
-      <button class="btn btn--ghost btn--sm" data-tool="targets" type="button">
-        Destinos (<span class="sched-msg__count">${msg ? msg.target_jids.length : 0}</span>)
-      </button>
-    </div>
-    <div class="media-preview sched-msg__mediapreview" hidden></div>
-    <div class="sched-msg__copybox" hidden></div>
-    <div class="sched-msg__targets" hidden></div>
-  `
-
-  // Estado interno de destinos y multimedia del row
-  const jids = new Set(msg ? msg.target_jids : [])
-  row._jids = jids
-  row._media = (msg && msg.media) || null
-
-  const renderMediaPreview = () => {
-    const box = row.querySelector('.sched-msg__mediapreview')
-    const clearBtn = row.querySelector('[data-tool="clearmedia"]')
-    const nameEl = row.querySelector('.sched-msg__attachname')
-    if (!row._media) {
-      box.hidden = true
-      box.innerHTML = ''
-      clearBtn.hidden = true
-      nameEl.hidden = true
-      nameEl.textContent = ''
-      return
-    }
-    nameEl.hidden = false
-    nameEl.textContent = row._media.file_name || 'multimedia adjunta'
-    clearBtn.hidden = false
-    box.hidden = false
-    box.innerHTML = mediaPreviewHtml(row._media)
+  // Tipo: el formulario simple soporta once/daily/interval. weekly/monthly
+  // se degradan a daily con aviso (mejor que romper silenciosamente).
+  let type = s.sched_type
+  if (type !== 'once' && type !== 'daily' && type !== 'interval') {
+    toast('Esta programación usaba repetición "' + type + '". Se carga como "diaria" — guardá para confirmar el cambio.', 'error')
+    type = 'daily'
   }
-  renderMediaPreview()
+  document.getElementById('sched-type-simple').value = type
 
-  const renderTargetsList = () => {
-    const accountId = Number(row.querySelector('.sched-msg__account').value)
-    const cache = state.groupsByAccount[accountId] || { groups: [], newsletters: [] }
-    const all = [...(cache.groups || []).map(g => ({ ...g, icon: '👥' })), ...(cache.newsletters || []).map(n => ({ ...n, icon: '📢' }))]
-    const box = row.querySelector('.sched-msg__targets')
-    if (all.length === 0) {
-      box.innerHTML = '<div class="empty empty--sm">Esta cuenta no tiene grupos/canales en caché. Sincronizá desde Destinos (Publicar) primero.</div>'
+  // Campos según tipo
+  if (type === 'once' && s.scheduled_at) {
+    const d = new Date(s.scheduled_at - new Date().getTimezoneOffset() * 60000)
+    document.getElementById('sched-datetime-simple').value = d.toISOString().slice(0, 16)
+  } else {
+    document.getElementById('sched-datetime-simple').value = ''
+  }
+
+  state.schedTimesSimple = Array.isArray(s.recur_times) && s.recur_times.length > 0
+    ? [...s.recur_times]
+    : (s.recur_time !== null && s.recur_time !== undefined ? [s.recur_time] : [])
+  if (type === 'daily' && state.schedTimesSimple.length === 0) {
+    state.schedTimesSimple = [9 * 60] // valor por defecto sensato
+  }
+  renderSchedTimeChipsSimple()
+
+  if (type === 'interval' && s.interval_minutes) {
+    document.getElementById('sched-interval-simple').value = String(s.interval_minutes)
+  } else {
+    document.getElementById('sched-interval-simple').value = '90'
+  }
+  updateSimpleSchedFields()
+
+  // Mensaje: el primero aporta el texto/media/decoraciones al formulario.
+  const firstMsg = (s.messages || [])[0]
+  if (firstMsg) {
+    document.getElementById('publish-text').value = firstMsg.text || ''
+    document.getElementById('publish-text').dispatchEvent(new Event('input'))
+    document.getElementById('dec-forwarded').checked = !!(firstMsg.decorations && firstMsg.decorations.forwarded)
+    state.publishMedia = firstMsg.media || null
+    state.mediaFile = null
+    if (firstMsg.media) {
+      renderServerPreview()
     } else {
-      box.innerHTML = all.map(item => {
-        const jid = item.jid
-        // Filas (mensajes) de la programación que tienen este destino elegido
-        const rowsWith = Array.from(document.querySelectorAll('.sched-msg')).filter(r => r._jids && r._jids.has(jid))
-        let dupeControl = ''
-        if (rowsWith.length >= 2) {
-          // Dos o más mensajes apuntan al mismo destino → elegir quién envía
-          const opts = rowsWith.map(r => {
-            const aId = Number(r.querySelector('.sched-msg__account').value)
-            const a = state.accounts.find(x => x.id === aId)
-            return { id: aId, label: a ? a.label : `Cuenta ${aId}`, warn: !!a && a.status !== 'connected' }
-          })
-          const validIds = new Set(opts.map(o => o.id))
-          if (!(jid in state.schedAssign) || !validIds.has(state.schedAssign[jid])) {
-            state.schedAssign[jid] = opts[0].id
-          }
-          dupeControl = dupePickerHtml(jid, opts, state.schedAssign[jid])
-        } else if (rowsWith.length === 1 && rowsWith[0] !== row) {
-          // Aviso informativo: otro mensaje ya tiene este destino
-          const aId = Number(rowsWith[0].querySelector('.sched-msg__account').value)
-          const a = state.accounts.find(x => x.id === aId)
-          dupeControl = a ? `<span class="target-item__dupe">⇄ ya en ${escapeHtml(a.label)}</span>` : ''
-        }
-        return `
-          <div class="target-row">
-            <label class="target-item">
-              <input type="checkbox" value="${escapeHtml(jid)}" ${jids.has(jid) ? 'checked' : ''} />
-              <div style="flex:1; min-width:0;">
-                <div class="target-item__name">
-                  <span class="target-item__icon">${item.icon}</span>
-                  ${escapeHtml(item.name || '(sin nombre)')}
-                  ${item.is_admin === false ? (item.can_send === false
-                    ? '<span class="target-item__tag target-item__tag--restricted">SOLO ADMINS</span>'
-                    : '<span class="target-item__tag target-item__tag--member">MIEMBRO</span>') : ''}
-                </div>
-                <div class="target-item__jid">${escapeHtml(jid)}</div>
-              </div>
-            </label>
-            ${dupeControl}
-          </div>
-        `
-      }).join('')
-      bindDupePickers(box, (jid2, accId) => {
-        state.schedAssign[jid2] = accId
-        // Las otras listas visibles muestran el mismo destino → sincronizar
-        document.querySelectorAll('.sched-msg').forEach(r => {
-          if (r !== row) {
-            const t = r.querySelector('.sched-msg__targets')
-            if (!t.hidden && r._renderTargets) r._renderTargets()
-          }
-        })
-      })
-      box.querySelectorAll('input[type="checkbox"]').forEach(cb => {
-        cb.addEventListener('change', () => {
-          if (cb.checked) jids.add(cb.value)
-          else jids.delete(cb.value)
-          // Poda: si el destino dejó de estar duplicado, su elección ya no aplica
-          if (state.schedAssign[cb.value]) {
-            const owners = Array.from(document.querySelectorAll('.sched-msg')).filter(r => r._jids && r._jids.has(cb.value))
-            if (owners.length < 2) delete state.schedAssign[cb.value]
-          }
-          row.querySelector('.sched-msg__count').textContent = String(jids.size)
-          // Otras listas visibles pueden necesitar el aviso del duplicado nuevo/quitado
-          refreshVisibleSchedTargets()
-        })
-      })
+      clearMedia()
     }
-    row.querySelector('.sched-msg__count').textContent = String(jids.size)
   }
-  row._renderTargets = renderTargetsList
 
-  row.querySelector('[data-tool="targets"]').addEventListener('click', () => {
-    const box = row.querySelector('.sched-msg__targets')
-    const willShow = box.hidden
-    if (willShow) renderTargetsList()
-    box.hidden = !willShow
-  })
+  // Destinos: todos los (account_id, target_jids) de los mensajes se suman
+  // a state.selectedJids para que la lista de Destinos muestre los elegidos.
+  state.selectedJids = {}
+  state.dupeChoice = {}
+  for (const m of (s.messages || [])) {
+    if (!state.selectedJids[m.account_id]) state.selectedJids[m.account_id] = new Set()
+    for (const jid of (m.target_jids || [])) state.selectedJids[m.account_id].add(jid)
+  }
+  // assign_map del schedule -> dupeChoice (mismísimo formato)
+  if (s.assign_map && typeof s.assign_map === 'object') {
+    state.dupeChoice = { ...s.assign_map }
+  }
 
-  row.querySelector('[data-tool="del"]').addEventListener('click', () => {
-    if (wrap.children.length <= 1) { toast('Tenés que dejar al menos un mensaje.', 'error'); return }
-    row.remove()
-    // Los duplicados pueden cambiar al quitar una fila
-    refreshVisibleSchedTargets()
-  })
-
-  // Cambiar cuenta: recargar la lista de destinos si está visible. Los jids
-  // elegidos de la cuenta anterior que la nueva no tiene en caché se sueltan
-  // (si no, el mensaje guardaría destinos que no le corresponden y el
-  // contador mentiría).
-  row.querySelector('.sched-msg__account').addEventListener('change', () => {
-    const newAcc = Number(row.querySelector('.sched-msg__account').value)
-    const cache = state.groupsByAccount[newAcc] || { groups: [], newsletters: [] }
-    const valid = new Set([...(cache.groups || []), ...(cache.newsletters || [])].map(x => x.jid))
-    if (row._jids) {
-      for (const jid of Array.from(row._jids)) {
-        if (!valid.has(jid)) row._jids.delete(jid)
-      }
+  // Cambiar a la cuenta del primer mensaje (si existe) para que la lista de
+  // destinos muestre los grupos de esa cuenta.
+  if (firstMsg && firstMsg.account_id) {
+    state.activeAccountId = firstMsg.account_id
+    renderAccountChips()
+    // Asegurar que los grupos de cada cuenta usada estén cargados.
+    for (const accId of Object.keys(state.selectedJids)) {
+      loadGroupsForAccount(Number(accId))
     }
-    refreshVisibleSchedTargets()
-  })
+  }
+  renderTargets()
+  updatePublishButton()
 
-  // Cargar plantilla dentro de este mensaje (texto + decoraciones + multimedia)
-  row.querySelector('.sched-msg__tpl').addEventListener('change', async e => {
-    const id = Number(e.target.value)
-    if (!id) return
-    const t = state.templates.find(x => x.id === id)
-    if (!t) return
-    row.querySelector('.sched-msg__text').value = t.text || ''
-    row.querySelector('.sched-msg__forwarded').checked = !!(t.decorations && t.decorations.forwarded)
-    row._media = t.media || null
-    renderMediaPreview()
-    e.target.value = ''
-    toast('Plantilla cargada en el mensaje.', 'success')
-  })
-
-  // Adjuntar multimedia propia del mensaje
-  row.querySelector('.sched-msg__attachbtn').addEventListener('click', () => {
-    row.querySelector('.sched-msg__file').click()
-  })
-  row.querySelector('.sched-msg__file').addEventListener('change', async e => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    const media = await uploadMediaFile(file)
-    if (media) {
-      row._media = media
-      renderMediaPreview()
-    }
-    e.target.value = ''
-  })
-
-  row.querySelector('[data-tool="clearmedia"]').addEventListener('click', () => {
-    row._media = null
-    renderMediaPreview()
-  })
-
-  // Copiar este mensaje a varias cuentas de una vez
-  row.querySelector('[data-tool="copy"]').addEventListener('click', () => {
-    const box = row.querySelector('.sched-msg__copybox')
-    if (!box.hidden) { box.hidden = true; return }
-
-    const currentAccountId = Number(row.querySelector('.sched-msg__account').value)
-    const others = state.accounts.filter(a => a.id !== currentAccountId)
-    if (others.length === 0) { toast('No hay otras cuentas para copiar.', 'error'); return }
-
-    box.innerHTML = `
-      <div class="copybox">
-        <div class="field__hint">Copiar este mensaje (texto + multimedia) a:</div>
-        <div class="copybox__accounts">
-          ${others.map(a => `
-            <label class="checkbox checkbox--sm">
-              <input type="checkbox" class="copybox__acc" value="${a.id}" />
-              <span>${escapeHtml(a.label)}</span>
-            </label>
-          `).join('')}
-        </div>
-        <button class="btn btn--ghost btn--sm" data-tool="applycopy" type="button">Copiar ahora</button>
-      </div>
-    `
-    box.hidden = false
-
-    box.querySelector('[data-tool="applycopy"]').addEventListener('click', () => {
-      const selected = Array.from(box.querySelectorAll('.copybox__acc:checked')).map(cb => Number(cb.value))
-      if (selected.length === 0) { toast('Elegí al menos una cuenta.', 'error'); return }
-      const text = row.querySelector('.sched-msg__text').value
-      const forwarded = row.querySelector('.sched-msg__forwarded').checked
-      const decorations = {}
-      if (forwarded) decorations.forwarded = true
-      for (const accId of selected) {
-        addSchedMessageRow({
-          account_id: accId,
-          text,
-          target_jids: [],
-          decorations: Object.keys(decorations).length > 0 ? decorations : null,
-          media: row._media
-        })
-      }
-      box.hidden = true
-      toast(`Mensaje copiado a ${selected.length} cuenta${selected.length !== 1 ? 's' : ''}. Elegí los destinos de cada una.`, 'success')
-    })
-  })
-
-  wrap.appendChild(row)
+  // Scroll al formulario y aviso claro de que está editando.
+  document.getElementById('send-mode-schedule').scrollIntoView({ behavior: 'smooth', block: 'start' })
+  toast(`Editando "${s.name}". Modificá lo que haga falta y presioná "Crear programación" para guardar los cambios.`, 'success')
 }
 
-function collectScheduleData () {
-  const name = document.getElementById('sched-name').value.trim()
-  const type = document.getElementById('sched-type').value
+/**
+ * Resetea el formulario a su estado inicial (usado después de crear/guardar).
+ * NO borra las programaciones existentes, sólo el formulario.
+ */
+function resetUnifiedForm () {
+  state.editingScheduleId = null
+  state.schedTimesSimple = []
+  state.selectedJids = {}
+  state.dupeChoice = {}
+  document.getElementById('publish-text').value = ''
+  document.getElementById('publish-text').dispatchEvent(new Event('input'))
+  document.getElementById('dec-forwarded').checked = false
+  document.getElementById('sched-name-simple').value = ''
+  document.getElementById('sched-type-simple').value = 'once'
+  document.getElementById('sched-datetime-simple').value = ''
+  document.getElementById('sched-interval-simple').value = '90'
+  clearMedia()
+  renderSchedTimeChipsSimple()
+  updateSimpleSchedFields()
+  renderTargets()
+  updatePublishButton()
+}
 
-  if (!name) { toast('Poné un nombre a la programación.', 'error'); return null }
+/**
+ * Construye los items[] (uno por cuenta con destinos) a partir del estado
+ * actual del formulario unificado. Es el mismo building block que usa el
+ * publish inmediato — sólo varía el envío (programado vs. ahora).
+ */
+function buildItemsFromSelection () {
+  const text = document.getElementById('publish-text').value.trim()
+  const decorations = {}
+  if (document.getElementById('dec-forwarded').checked) decorations.forwarded = true
 
+  const items = []
+  for (const acc of state.accounts) {
+    const set = state.selectedJids[acc.id]
+    if (set && set.size > 0) {
+      items.push({
+        account_id: acc.id,
+        text,
+        target_jids: Array.from(set),
+        decorations: Object.keys(decorations).length > 0 ? { ...decorations } : undefined,
+        media_id: state.publishMedia ? state.publishMedia.id : undefined
+      })
+    }
+  }
+  return items
+}
+
+/**
+ * Construye el assign_map para destinos duplicados entre cuentas —
+ * mismo formato que ya usa publish().
+ */
+function buildAssignMap () {
+  const accountsByJid = new Map()
+  for (const acc of state.accounts) {
+    const set = state.selectedJids[acc.id]
+    if (!set) continue
+    for (const jid of set) {
+      if (!accountsByJid.has(jid)) accountsByJid.set(jid, [])
+      accountsByJid.get(jid).push(acc.id)
+    }
+  }
+  const assign = {}
+  for (const [jid, accIds] of accountsByJid) {
+    if (accIds.length < 2) continue
+    const chosen = state.dupeChoice[jid]
+    assign[jid] = accIds.includes(chosen) ? chosen : accIds[0]
+  }
+  return Object.keys(assign).length > 0 ? assign : undefined
+}
+
+/**
+ * Recopila y valida los datos del formulario unificado en modo "programar".
+ * Devuelve el payload listo para POST/PUT a /api/schedules, o null si falla.
+ */
+function collectSimpleScheduleData () {
+  const name = document.getElementById('sched-name-simple').value.trim()
+  const type = document.getElementById('sched-type-simple').value
+
+  // Items compartidos con el modo "ahora"
+  const items = buildItemsFromSelection()
+  if (items.length === 0) { toast('Elegí al menos un destino.', 'error'); return null }
+
+  const text = document.getElementById('publish-text').value.trim()
+  const hasMedia = !!state.publishMedia
+  if (!text && !hasMedia) { toast('Debe haber al menos texto o un archivo multimedia.', 'error'); return null }
+
+  // Validación específica del tipo de repetición
   let scheduled_at = null
   let recur_time = null
   let recur_times = null
-  let recur_dow = null
-  let recur_dom = null
   let interval_minutes = null
-  let window_start = null
-  let window_end = null
 
   if (type === 'once') {
-    const dtv = document.getElementById('sched-datetime').value
+    const dtv = document.getElementById('sched-datetime-simple').value
     if (!dtv) { toast('Elegí fecha y hora.', 'error'); return null }
     scheduled_at = new Date(dtv).getTime()
+    if (scheduled_at < Date.now() - 60000) {
+      // Tolerancia de 1 min para no marear con desfases de reloj.
+      toast('La fecha y hora ya pasaron. Elegí un momento futuro.', 'error')
+      return null
+    }
+  } else if (type === 'daily') {
+    if (state.schedTimesSimple.length === 0) { toast('Agregá al menos un horario del día.', 'error'); return null }
+    recur_times = state.schedTimesSimple
+    recur_time = state.schedTimesSimple[0]
   } else if (type === 'interval') {
-    const iv = Number(document.getElementById('sched-interval').value)
-    if (!Number.isInteger(iv) || iv < 1 || iv > 1440) { toast('El intervalo debe estar entre 1 y 1440 minutos.', 'error'); return null }
+    const iv = Number(document.getElementById('sched-interval-simple').value)
+    if (!Number.isInteger(iv) || iv < 1 || iv > 1440) {
+      toast('El intervalo debe estar entre 1 y 1440 minutos.', 'error')
+      return null
+    }
     interval_minutes = iv
-    if (document.getElementById('sched-window-on').checked) {
-      const ws = hhmmToMinutes(document.getElementById('sched-window-start').value)
-      const we = hhmmToMinutes(document.getElementById('sched-window-end').value)
-      if (ws === null || we === null || ws >= we) { toast('La ventana horaria está mal: el inicio debe ser antes del fin.', 'error'); return null }
-      window_start = ws
-      window_end = we
-    }
-  } else {
-    if (state.schedTimes.length === 0) { toast('Agregá al menos un horario del día.', 'error'); return null }
-    recur_times = state.schedTimes
-    recur_time = state.schedTimes[0]
-    if (type === 'weekly') recur_dow = Number(document.getElementById('sched-dow').value)
-    if (type === 'monthly') recur_dom = Number(document.getElementById('sched-dom').value)
   }
 
-  const messages = []
-  for (const row of document.querySelectorAll('.sched-msg')) {
-    const accountId = Number(row.querySelector('.sched-msg__account').value)
-    if (!accountId) { toast('Uno de los mensajes no tiene cuenta elegida.', 'error'); return null }
-    const text = row.querySelector('.sched-msg__text').value.trim()
-    if (!text && !row._media) { toast('Uno de los mensajes está sin texto y sin multimedia.', 'error'); return null }
-    const jids = Array.from(row._jids)
-    if (jids.length === 0) { toast('Uno de los mensajes no tiene destinos.', 'error'); return null }
-    const decorations = {}
-    if (row.querySelector('.sched-msg__forwarded').checked) decorations.forwarded = true
-    messages.push({
-      account_id: accountId,
-      target_jids: jids,
-      text,
-      decorations: Object.keys(decorations).length > 0 ? decorations : undefined,
-      media_id: row._media ? row._media.id : undefined
-    })
-  }
+  // Nombre autogenerado si está vacío
+  const finalName = name || (() => {
+    const d = new Date()
+    const pad = n => String(n).padStart(2, '0')
+    const stamp = `${pad(d.getDate())}/${pad(d.getMonth() + 1)} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+    const typeLabel = type === 'once' ? 'una vez' : (type === 'daily' ? 'diaria' : `cada ${interval_minutes}m`)
+    return `Programación ${typeLabel} (${stamp})`
+  })()
 
-  if (messages.length === 0) { toast('Agregá al menos un mensaje.', 'error'); return null }
-
-  // Elección de cuenta para duplicados: sólo jids todavía repetidos entre
-  // mensajes y cuya cuenta elegida siga participando.
-  const jidOwners = new Map()
-  for (const m of messages) {
-    for (const jid of m.target_jids) {
-      if (!jidOwners.has(jid)) jidOwners.set(jid, new Set())
-      jidOwners.get(jid).add(m.account_id)
-    }
-  }
-  const assignMap = {}
-  for (const [jid, accId] of Object.entries(state.schedAssign)) {
-    const owners = jidOwners.get(jid)
-    if (owners && owners.size >= 2 && owners.has(accId)) assignMap[jid] = accId
-  }
+  // messages[] respeta el formato del backend:
+  // { account_id, target_jids, text, decorations, media_id }
+  const messages = items.map(it => ({
+    account_id: it.account_id,
+    target_jids: it.target_jids,
+    text: it.text,
+    decorations: it.decorations,
+    media_id: it.media_id
+  }))
 
   return {
-    name,
+    name: finalName,
     sched_type: type,
     scheduled_at,
     recur_time,
     recur_times,
-    recur_dow,
-    recur_dom,
+    recur_dow: null,
+    recur_dom: null,
     interval_minutes,
-    window_start,
-    window_end,
+    window_start: null,
+    window_end: null,
     tz_offset_min: new Date().getTimezoneOffset(),
     messages,
-    assign_map: Object.keys(assignMap).length > 0 ? assignMap : undefined
+    assign_map: buildAssignMap()
   }
 }
 
-async function saveSchedule () {
-  const data = collectScheduleData()
+async function createSchedule () {
+  if (state.uploading) { toast('Esperá a que termine de subir la multimedia.', 'error'); return }
+  const data = collectSimpleScheduleData()
   if (!data) return
 
-  const btn = document.getElementById('btn-save-sched')
+  const btn = document.getElementById('btn-schedule-simple')
   const btnText = btn.querySelector('.btn__text')
   const btnSpinner = btn.querySelector('.btn__spinner')
   btn.disabled = true
-  btnText.textContent = 'Guardando…'
+  btnText.textContent = state.editingScheduleId ? 'Guardando…' : 'Creando…'
   btnSpinner.hidden = false
 
   try {
@@ -1774,16 +1620,19 @@ async function saveSchedule () {
       })
       toast('Programación creada ✓', 'success')
     }
-    document.getElementById('schedule-editor').hidden = true
+    resetUnifiedForm()
+    switchSendMode('now') // volver al modo "ahora" después de crear/editar
     loadSchedules()
   } catch (err) {
     toast('Error: ' + err.message, 'error')
   } finally {
     btn.disabled = false
-    btnText.textContent = 'Guardar programación'
+    btnText.textContent = 'Crear programación'
     btnSpinner.hidden = true
+    updatePublishButton()
   }
 }
+
 
 /* ---------- Historial ---------- */
 
@@ -2200,8 +2049,14 @@ async function afterLogin () {
   }
   renderTargets()
   startStatusPolling()
-  // Precargar plantillas para el selector del editor (silencioso)
+  // Precargar plantillas para el selector del formulario (silencioso)
   try { await loadTemplates() } catch { /* la vista mostrará el error */ }
+  // Cargar la lista de programaciones (siempre visible abajo del formulario).
+  try { await loadSchedules() } catch { /* la vista mostrará el error */ }
+  // Inicializar el formulario unificado en modo "ahora"
+  switchSendMode('now')
+  renderSchedTimeChipsSimple()
+  updateSimpleSchedFields()
 }
 
 document.getElementById('login-form').addEventListener('submit', e => {
@@ -2217,16 +2072,17 @@ document.getElementById('mobile-logout').addEventListener('click', doLogout)
 document.getElementById('btn-add-account').addEventListener('click', addAccount)
 document.getElementById('btn-cancel-link').addEventListener('click', cancelLinking)
 document.getElementById('btn-request-code').addEventListener('click', requestPairingCode)
-document.getElementById('btn-new-sched').addEventListener('click', () => openScheduleEditor(null))
-document.getElementById('btn-add-sched-msg').addEventListener('click', () => addSchedMessageRow(null))
-document.getElementById('btn-save-sched').addEventListener('click', saveSchedule)
-document.getElementById('btn-cancel-sched').addEventListener('click', () => {
-  document.getElementById('schedule-editor').hidden = true
-})
-document.getElementById('sched-type').addEventListener('change', updateSchedTypeFields)
-document.getElementById('btn-add-time').addEventListener('click', addSchedTime)
-document.getElementById('sched-window-on').addEventListener('change', updateSchedTypeFields)
 document.getElementById('btn-add-admin').addEventListener('click', addAdmin)
+
+// Toggle de modo de envío unificado (ahora / programar)
+document.querySelectorAll('#send-mode-toggle .send-mode-btn').forEach(btn => {
+  btn.addEventListener('click', () => switchSendMode(btn.dataset.mode))
+})
+// Sub-mode del programador simplificado
+document.getElementById('sched-type-simple').addEventListener('change', updateSimpleSchedFields)
+document.getElementById('btn-add-time-simple').addEventListener('click', addSchedTimeSimple)
+// Botón "Crear programación" en modo programar
+document.getElementById('btn-schedule-simple').addEventListener('click', createSchedule)
 
 setupMediaAttach()
 checkSession()

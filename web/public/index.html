@@ -91,7 +91,7 @@
           <p class="view__desc">Creá y enviá publicaciones con multimedia a tus grupos y canales. Guardá plantillas reutilizables y programá envíos automáticos.</p>
         </header>
 
-        <!-- Sub-tabs de la vista Publicar -->
+        <!-- Sub-tabs de la vista Publicar (unificada: Publicar + Plantillas) -->
         <div class="tabs subtabs" id="publish-subtabs">
           <button class="tab active" data-subtab="publish" type="button">
             <span>📤 Publicar</span>
@@ -99,10 +99,6 @@
           <button class="tab" data-subtab="templates" type="button">
             <span>📄 Plantillas</span>
             <span class="tab__count" id="tab-templates-count">0</span>
-          </button>
-          <button class="tab" data-subtab="schedules" type="button">
-            <span>⏰ Programadas</span>
-            <span class="tab__count" id="tab-schedules-count">0</span>
           </button>
         </div>
 
@@ -214,16 +210,82 @@ _hola_  →  cursiva
             </div>
           </div>
 
+          <!-- Modo de envío: ahora o programar (unificado) -->
+          <div class="card send-mode-card">
+            <div class="send-mode-toggle" id="send-mode-toggle">
+              <button class="send-mode-btn active" data-mode="now" type="button">
+                <span class="send-mode-btn__icon">⚡</span>
+                <span>Enviar ahora</span>
+              </button>
+              <button class="send-mode-btn" data-mode="schedule" type="button">
+                <span class="send-mode-btn__icon">⏰</span>
+                <span>Programar</span>
+              </button>
+            </div>
+
+            <!-- Modo: Enviar ahora -->
+            <div class="send-mode-panel" id="send-mode-now">
+              <button class="btn btn--primary btn--block" id="btn-publish" disabled>
+                <span class="btn__text">Publicar ahora</span>
+                <span class="btn__spinner" hidden></span>
+              </button>
+            </div>
+
+            <!-- Modo: Programar (simple) -->
+            <div class="send-mode-panel" id="send-mode-schedule" hidden>
+              <div class="form-grid">
+                <label class="field">
+                  <span class="field__label">Repetición</span>
+                  <select id="sched-type-simple" class="field__input">
+                    <option value="once">Una sola vez</option>
+                    <option value="daily">Todos los días</option>
+                    <option value="interval">Cada N minutos</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span class="field__label">Nombre (opcional)</span>
+                  <input type="text" id="sched-name-simple" class="field__input" placeholder="Se autogenera si lo dejás vacío" />
+                </label>
+              </div>
+
+              <!-- Una vez: fecha y hora -->
+              <div class="form-grid" id="simple-once-fields">
+                <label class="field">
+                  <span class="field__label">Fecha y hora</span>
+                  <input type="datetime-local" id="sched-datetime-simple" class="field__input" />
+                </label>
+              </div>
+
+              <!-- Diario: chips de horarios -->
+              <div id="simple-daily-fields" hidden>
+                <div class="field">
+                  <span class="field__label">Horarios del día</span>
+                  <div class="time-chips" id="sched-times-simple"></div>
+                  <div class="time-add-row">
+                    <input type="time" id="sched-new-time-simple" class="field__input" value="09:00" />
+                    <button class="btn btn--ghost btn--sm" id="btn-add-time-simple" type="button">+ Agregar hora</button>
+                  </div>
+                  <span class="field__hint">Agregá varios horarios para repetir la publicación varias veces al día.</span>
+                </div>
+              </div>
+
+              <!-- Intervalo: cada N minutos -->
+              <div class="form-grid" id="simple-interval-fields" hidden>
+                <label class="field">
+                  <span class="field__label">Repetir cada (minutos)</span>
+                  <input type="number" id="sched-interval-simple" class="field__input" min="1" max="1440" value="90" />
+                </label>
+              </div>
+
+              <button class="btn btn--primary btn--block" id="btn-schedule-simple">
+                <span class="btn__text">Crear programación</span>
+                <span class="btn__spinner" hidden></span>
+              </button>
+            </div>
+          </div>
+
           <!-- Resultados -->
           <div class="results" id="publish-results" hidden></div>
-
-          <!-- Acción de publicar (pantallas grandes; en móvil está el FAB) -->
-          <div class="actions actions--publish">
-            <button class="btn btn--primary btn--block" id="btn-publish" disabled>
-              <span class="btn__text">Publicar</span>
-              <span class="btn__spinner" hidden></span>
-            </button>
-          </div>
         </div>
 
         <!-- ===== Sub-tab: Plantillas ===== -->
@@ -235,117 +297,14 @@ _hola_  →  cursiva
           </div>
         </div>
 
-        <!-- ===== Sub-tab: Programadas ===== -->
-        <div class="subtab-panel" id="subtab-schedules" hidden>
-          <!-- Editor de programación -->
-          <div class="card" id="schedule-editor" hidden>
-            <div class="card__header">
-              <span class="card__title" id="schedule-editor-title">Nueva programación</span>
-              <button class="btn btn--ghost btn--sm" id="btn-cancel-sched" type="button">Cancelar</button>
-            </div>
-            <div class="form-grid">
-              <label class="field">
-                <span class="field__label">Nombre</span>
-                <input type="text" id="sched-name" class="field__input" placeholder="Ej: Promo de la mañana" />
-              </label>
-              <label class="field">
-                <span class="field__label">Repetición</span>
-                <select id="sched-type" class="field__input">
-                  <option value="once">Una sola vez</option>
-                  <option value="daily">Todos los días</option>
-                  <option value="weekly">Semanal</option>
-                  <option value="monthly">Mensual</option>
-                  <option value="interval">Cada N minutos</option>
-                </select>
-              </label>
-            </div>
-
-            <div class="form-grid" id="sched-once-fields">
-              <label class="field">
-                <span class="field__label">Fecha y hora</span>
-                <input type="datetime-local" id="sched-datetime" class="field__input" />
-              </label>
-            </div>
-
-            <div id="sched-recur-fields" hidden>
-              <div class="field">
-                <span class="field__label">Horarios del día</span>
-                <div class="time-chips" id="sched-times-chips"></div>
-                <div class="time-add-row">
-                  <input type="time" id="sched-new-time" class="field__input" value="09:00" />
-                  <button class="btn btn--ghost btn--sm" id="btn-add-time" type="button">+ Agregar hora</button>
-                </div>
-                <span class="field__hint">Agregá varios horarios para repetir la publicación varias veces al día.</span>
-              </div>
-              <div class="form-grid">
-                <label class="field" id="sched-dow-field" hidden>
-                  <span class="field__label">Día de la semana</span>
-                  <select id="sched-dow" class="field__input">
-                    <option value="0">Domingo</option>
-                    <option value="1">Lunes</option>
-                    <option value="2">Martes</option>
-                    <option value="3">Miércoles</option>
-                    <option value="4">Jueves</option>
-                    <option value="5">Viernes</option>
-                    <option value="6">Sábado</option>
-                  </select>
-                </label>
-                <label class="field" id="sched-dom-field" hidden>
-                  <span class="field__label">Día del mes (1-28)</span>
-                  <input type="number" id="sched-dom" class="field__input" min="1" max="28" value="1" />
-                </label>
-              </div>
-            </div>
-
-            <div id="sched-interval-fields" hidden>
-              <div class="form-grid">
-                <label class="field">
-                  <span class="field__label">Repetir cada (minutos)</span>
-                  <input type="number" id="sched-interval" class="field__input" min="1" max="1440" value="90" />
-                </label>
-                <div class="field">
-                  <span class="field__label">Limitar horario (opcional)</span>
-                  <label class="checkbox">
-                    <input type="checkbox" id="sched-window-on" />
-                    <span>Sólo enviar entre horas</span>
-                  </label>
-                </div>
-              </div>
-              <div class="form-grid" id="sched-window-fields" hidden>
-                <label class="field">
-                  <span class="field__label">Desde</span>
-                  <input type="time" id="sched-window-start" class="field__input" value="09:00" />
-                </label>
-                <label class="field">
-                  <span class="field__label">Hasta</span>
-                  <input type="time" id="sched-window-end" class="field__input" value="18:00" />
-                </label>
-              </div>
-            </div>
-
-            <div class="field">
-              <span class="field__label">Mensajes (uno por cuenta)</span>
-              <div id="sched-messages"></div>
-              <button class="btn btn--ghost btn--sm" id="btn-add-sched-msg">+ Agregar mensaje</button>
-            </div>
-
-            <div class="actions actions--editor">
-              <button class="btn btn--primary" id="btn-save-sched">
-                <span class="btn__text">Guardar programación</span>
-                <span class="btn__spinner" hidden></span>
-              </button>
-            </div>
+        <!-- ===== Programaciones (lista siempre visible abajo) ===== -->
+        <div class="card schedules-card" id="schedules-list-card">
+          <div class="card__header">
+            <span class="card__title">Programaciones</span>
+            <span class="tab__count" id="tab-schedules-count">0</span>
           </div>
-
-          <!-- Lista de programaciones -->
-          <div class="card">
-            <div class="card__header">
-              <span class="card__title">Programaciones</span>
-              <button class="btn btn--ghost btn--sm" id="btn-new-sched">+ Nueva</button>
-            </div>
-            <div class="history-list" id="schedules-list">
-              <div class="empty">Cargando programaciones…</div>
-            </div>
+          <div class="history-list" id="schedules-list">
+            <div class="empty">Cargando programaciones…</div>
           </div>
         </div>
       </section>
